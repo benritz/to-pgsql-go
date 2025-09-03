@@ -14,6 +14,7 @@ import (
 
 var (
 	forceCaseInsensitive bool
+	writeData            bool
 	dataBatchSize        int
 )
 
@@ -36,6 +37,7 @@ type Table struct {
 func main() {
 	var outputFile string
 	flag.BoolVar(&forceCaseInsensitive, "forceCaseInsensitive", true, "Use citext for case-insensitive text columns")
+	flag.BoolVar(&writeData, "writeData", false, "Write table data")
 	flag.IntVar(&dataBatchSize, "dataBatchSize", 100, "Batch size for data inserts")
 	flag.Parse()
 
@@ -81,9 +83,11 @@ func main() {
 		os.Exit(1)
 	}
 
-	if err := writeAllTableData(db, out, tables); err != nil {
-		fmt.Fprintln(os.Stderr, err)
-		os.Exit(1)
+	if writeData {
+		if err := writeAllTableData(db, out, tables); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
 	}
 
 	// if err := writeFunctions(db, out); err != nil {
