@@ -155,6 +155,13 @@ func writeTables(db *sql.DB, out io.Writer) error {
 }
 
 func writeTable(db *sql.DB, out io.Writer, table string, columns []Column) error {
+	if err := writeTableSchema(out, table, columns); err != nil {
+		return err
+	}
+	return writeTableData(db, out, table)
+}
+
+func writeTableSchema(out io.Writer, table string, columns []Column) error {
 	columnDefs := ""
 	for i, column := range columns {
 		if i > 0 {
@@ -192,7 +199,10 @@ func writeTable(db *sql.DB, out io.Writer, table string, columns []Column) error
 		columnDefs += " null"
 	}
 	fmt.Fprintf(out, "/* -- %s -- */\ndrop table if exists %s;\n\ncreate table %s\n(\n%s\n);\n\n", table, table, table, columnDefs)
-	// Write data
+	return nil
+}
+
+func writeTableData(db *sql.DB, out io.Writer, table string) error {
 	query := fmt.Sprintf("select * from %s", table)
 
 	rows, err := db.Query(query)
@@ -475,4 +485,3 @@ func writeCompiledObject(db *sql.DB, out io.Writer, objType string) error {
 	}
 	return nil
 }
-
