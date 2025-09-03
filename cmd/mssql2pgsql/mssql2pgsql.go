@@ -75,7 +75,7 @@ func main() {
 		os.Exit(1)
 	}
 
-	if err := writeAllTableSchemas(out, tables); err != nil {
+	if err := writeAllTableSchemas(db, out, tables); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
 	}
@@ -85,42 +85,30 @@ func main() {
 		os.Exit(1)
 	}
 
-	writeSeqReset(out)
-
-	if err := writeIndexes(db, out); err != nil {
-		fmt.Fprintln(os.Stderr, err)
-		os.Exit(1)
-	}
-
-	if err := writeForeignKeys(db, out); err != nil {
-		fmt.Fprintln(os.Stderr, err)
-		os.Exit(1)
-	}
-
-	if err := writeFunctions(db, out); err != nil {
-		fmt.Fprintln(os.Stderr, err)
-		os.Exit(1)
-	}
-
-	if err := writeDefaults(db, out); err != nil {
-		fmt.Fprintln(os.Stderr, err)
-		os.Exit(1)
-	}
-
-	if err := writeProcedures(db, out); err != nil {
-		fmt.Fprintln(os.Stderr, err)
-		os.Exit(1)
-	}
-
-	if err := writeViews(db, out); err != nil {
-		fmt.Fprintln(os.Stderr, err)
-		os.Exit(1)
-	}
-
-	if err := writeTriggers(db, out); err != nil {
-		fmt.Fprintln(os.Stderr, err)
-		os.Exit(1)
-	}
+	// if err := writeFunctions(db, out); err != nil {
+	// 	fmt.Fprintln(os.Stderr, err)
+	// 	os.Exit(1)
+	// }
+	//
+	// if err := writeDefaults(db, out); err != nil {
+	// 	fmt.Fprintln(os.Stderr, err)
+	// 	os.Exit(1)
+	// }
+	//
+	// if err := writeProcedures(db, out); err != nil {
+	// 	fmt.Fprintln(os.Stderr, err)
+	// 	os.Exit(1)
+	// }
+	//
+	// if err := writeViews(db, out); err != nil {
+	// 	fmt.Fprintln(os.Stderr, err)
+	// 	os.Exit(1)
+	// }
+	//
+	// if err := writeTriggers(db, out); err != nil {
+	// 	fmt.Fprintln(os.Stderr, err)
+	// 	os.Exit(1)
+	// }
 }
 
 func readTables(db *sql.DB) ([]Table, error) {
@@ -155,14 +143,7 @@ func readTables(db *sql.DB) ([]Table, error) {
 	return tables, nil
 }
 
-func writeTable(db *sql.DB, out io.Writer, table string, columns []Column) error {
-	if err := writeTableSchema(out, table, columns); err != nil {
-		return err
-	}
-	return writeTableData(db, out, table)
-}
-
-func writeTableSchema(out io.Writer, table string, columns []Column) error {
+func writeTableSchema(db *sql.DB, out io.Writer, table string, columns []Column) error {
 	columnDefs := ""
 	for i, column := range columns {
 		if i > 0 {
@@ -199,7 +180,17 @@ func writeTableSchema(out io.Writer, table string, columns []Column) error {
 		}
 		columnDefs += " null"
 	}
+
 	fmt.Fprintf(out, "/* -- %s -- */\ndrop table if exists %s;\n\ncreate table %s\n(\n%s\n);\n\n", table, table, table, columnDefs)
+
+	if err := writeIndexes(db, out, table); err != nil {
+		return err
+	}
+
+	if err := writeForeignKeys(db, out, table); err != nil {
+		return err
+	}
+
 	return nil
 }
 
@@ -258,14 +249,14 @@ func writeTableData(db *sql.DB, out io.Writer, table string) error {
 	return nil
 }
 
-func writeAllTableSchemas(out io.Writer, tables []Table) error {
+func writeAllTableSchemas(db *sql.DB, out io.Writer, tables []Table) error {
 	fmt.Fprintf(out, "/* --------------------- TABLES --------------------- */\n\n")
 	if forceCaseInsensitive {
 		fmt.Fprintf(out, "-- enable case insensitive extension\n")
 		fmt.Fprintf(out, "create extension citext;\n\n")
 	}
 	for _, t := range tables {
-		if err := writeTableSchema(out, t.Name, t.Columns); err != nil {
+		if err := writeTableSchema(db, out, t.Name, t.Columns); err != nil {
 			return err
 		}
 	}
@@ -278,6 +269,9 @@ func writeAllTableData(db *sql.DB, out io.Writer, tables []Table) error {
 			return err
 		}
 	}
+
+	writeSeqReset(out)
+
 	return nil
 }
 
@@ -317,10 +311,8 @@ end; $$ ;
 	fmt.Fprintf(out, "select relname, setval(oid, seq_field_max_value(oid)) from pg_class where relkind = 'S';\n\n")
 }
 
-func writeIndexes(db *sql.DB, out io.Writer) error {
-	fmt.Fprintf(out, "/* --------------------- PRIMARY KEYS, UNIQUE CONSTRAINTS AND INDEXES --------------------- */\n\n")
-
-	rows, err := db.Query("select t.name as table_name, c.name as column_name, i.name as index_name, ic.index_column_id, i.is_primary_key, i.is_unique_constraint, i.is_unique from sys.indexes i, sys.index_columns ic, sys.tables t, sys.columns c where i.object_id = t.object_id and ic.object_id = t.object_id and ic.index_id = i.index_id and t.object_id = c.object_id and ic.column_id = c.column_id order by t.name asc, t.object_id asc, i.index_id asc, ic.index_column_id asc")
+func writeIndexes(db *sql.DB, out io.Writer, table string) error {
+	rows, err := db.Query("select t.name as table_name, c.name as column_name, i.name as index_name, ic.index_column_id, i.is_primary_key, i.is_unique_constraint, i.is_unique from sys.indexes i, sys.index_columns ic, sys.tables t, sys.columns c where i.object_id = t.object_id and ic.object_id = t.object_id and ic.index_id = i.index_id and t.object_id = c.object_id and ic.column_id = c.column_id and t.name = @p1 order by t.name asc, t.object_id asc, i.index_id asc, ic.index_column_id asc", table)
 	if err != nil {
 		return err
 	}
@@ -349,6 +341,7 @@ func writeIndexes(db *sql.DB, out io.Writer) error {
 				} else {
 					fmt.Fprintf(out, "create index %s on %s (%s);\n", lastIndex, lastTable, strings.Join(columns, ", "))
 				}
+				// keep blank line between tables for readability
 				if lastTable != tableName {
 					fmt.Fprintf(out, "\n")
 				}
@@ -378,10 +371,10 @@ func writeIndexes(db *sql.DB, out io.Writer) error {
 	return nil
 }
 
-func writeForeignKeys(db *sql.DB, out io.Writer) error {
+func writeForeignKeys(db *sql.DB, out io.Writer, table string) error {
 	fmt.Fprintf(out, "/* --------------------- FOREIGN KEYS --------------------- */\n\n")
 
-	rows, err := db.Query("select fk.name as key_name, t.name as parent_table, c.name as parent_column, rt.name as referenced_table, rc.name as referenced_column, fkc.constraint_column_id as constraint_column_id from sys.tables t, sys.tables rt, sys.columns c, sys.columns rc, sys.foreign_keys fk, sys.foreign_key_columns fkc where fk.object_id = fkc.constraint_object_id and t.object_id = fk.parent_object_id and fkc.parent_column_id = c.column_id and c.object_id = t.object_id and rt.object_id = fk.referenced_object_id and fkc.referenced_column_id = rc.column_id and rc.object_id = rt.object_id order by fk.object_id asc, fkc.constraint_column_id asc")
+	rows, err := db.Query("select fk.name as key_name, t.name as parent_table, c.name as parent_column, rt.name as referenced_table, rc.name as referenced_column, fkc.constraint_column_id as constraint_column_id from sys.tables t, sys.tables rt, sys.columns c, sys.columns rc, sys.foreign_keys fk, sys.foreign_key_columns fkc where fk.object_id = fkc.constraint_object_id and t.object_id = fk.parent_object_id and fkc.parent_column_id = c.column_id and c.object_id = t.object_id and rt.object_id = fk.referenced_object_id and fkc.referenced_column_id = rc.column_id and rc.object_id = rt.object_id and t.name = @p1 order by fk.object_id asc, fkc.constraint_column_id asc", table)
 	if err != nil {
 		return err
 	}
