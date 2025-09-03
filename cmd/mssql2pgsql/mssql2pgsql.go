@@ -7,6 +7,7 @@ import (
 	"io"
 	"os"
 	"strings"
+	"time"
 
 	_ "github.com/denisenkom/go-mssqldb"
 )
@@ -225,6 +226,8 @@ func writeTableData(db *sql.DB, out io.Writer, table string) error {
 				valStrs[i] = fmt.Sprintf("'%s'", strings.ReplaceAll(string(v), "'", "''"))
 			case string:
 				valStrs[i] = fmt.Sprintf("'%s'", strings.ReplaceAll(v, "'", "''"))
+			case time.Time:
+				valStrs[i] = fmt.Sprintf("'%s'", v.UTC().Format("2006-01-02 15:04:05.999999Z07:00"))
 			default:
 				valStrs[i] = fmt.Sprintf("%v", v)
 			}
@@ -253,7 +256,7 @@ func writeAllTableSchemas(db *sql.DB, out io.Writer, tables []Table) error {
 	fmt.Fprintf(out, "/* --------------------- TABLES --------------------- */\n\n")
 	if forceCaseInsensitive {
 		fmt.Fprintf(out, "-- enable case insensitive extension\n")
-		fmt.Fprintf(out, "create extension citext;\n\n")
+		fmt.Fprintf(out, "create extension if not exists citext;\n\n")
 	}
 	for _, t := range tables {
 		if err := writeTableSchema(db, out, t.Name, t.Columns); err != nil {
@@ -495,7 +498,7 @@ func writeCompiledObject(db *sql.DB, out io.Writer, objType string) error {
 			}
 			n++
 		}
-		fmt.Fprintf(out, strings.TrimSpace(text))
+		fmt.Fprint(out, strings.TrimSpace(text))
 	}
 	if n > 0 {
 		fmt.Fprintf(out, ";\nGO\n\n")
