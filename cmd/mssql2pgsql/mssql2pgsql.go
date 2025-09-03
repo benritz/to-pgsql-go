@@ -223,7 +223,11 @@ func writeTableData(db *sql.DB, out io.Writer, table string) error {
 			case nil:
 				valStrs[i] = "NULL"
 			case []byte:
-				valStrs[i] = fmt.Sprintf("'%s'", strings.ReplaceAll(string(v), "'", "''"))
+				if len(v) == 0 {
+					valStrs[i] = "'\\x'"
+				} else {
+					valStrs[i] = fmt.Sprintf("'\\x%x'", v)
+				}
 			case string:
 				valStrs[i] = fmt.Sprintf("'%s'", strings.ReplaceAll(v, "'", "''"))
 			case time.Time:
