@@ -69,7 +69,18 @@ func main() {
 	}
 	defer db.Close()
 
-	if err := writeTables(db, out); err != nil {
+	tables, err := readTables(db)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
+
+	if err := writeAllTableSchemas(out, tables); err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
+
+	if err := writeAllTableData(db, out, tables); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
 	}
@@ -112,18 +123,13 @@ func main() {
 	}
 }
 
-func writeTables(db *sql.DB, out io.Writer) error {
-	fmt.Fprintf(out, "/* --------------------- TABLES --------------------- */\n\n")
-	if forceCaseInsensitive {
-		fmt.Fprintf(out, "-- enable case insensitive extension\n")
-		fmt.Fprintf(out, "create extension citext;\n\n")
-	}
-	// Query table and column metadata
+func readTables(db *sql.DB) ([]Table, error) {
 	rows, err := db.Query("select t.name as table_name, c.column_id, c.name as column_name, c.max_length, c.precision, c.scale, c.is_nullable, c.is_identity, ty.name as type from sys.tables t, sys.columns c, sys.types ty where t.object_id = c.object_id and c.user_type_id = ty.user_type_id order by t.name asc, t.object_id asc, c.column_id asc")
 	if err != nil {
-		return err
+		return nil, err
 	}
 	defer rows.Close()
+
 	tables := []Table{}
 	var lastTable string
 	var columns []Column
@@ -132,7 +138,7 @@ func writeTables(db *sql.DB, out io.Writer) error {
 		var columnID, maxLength, precision, scale int
 		var isNullable, isIdentity bool
 		if err := rows.Scan(&tableName, &columnID, &columnName, &maxLength, &precision, &scale, &isNullable, &isIdentity, &colType); err != nil {
-			return err
+			return nil, err
 		}
 		if columnID == 1 {
 			if lastTable != "" {
@@ -146,12 +152,7 @@ func writeTables(db *sql.DB, out io.Writer) error {
 	if lastTable != "" {
 		tables = append(tables, Table{Name: lastTable, Columns: columns})
 	}
-	for _, table := range tables {
-		if err := writeTable(db, out, table.Name, table.Columns); err != nil {
-			return err
-		}
-	}
-	return nil
+	return tables, nil
 }
 
 func writeTable(db *sql.DB, out io.Writer, table string, columns []Column) error {
@@ -253,6 +254,29 @@ func writeTableData(db *sql.DB, out io.Writer, table string) error {
 	}
 	if n > 0 {
 		fmt.Fprintf(out, ";\n\n")
+	}
+	return nil
+}
+
+func writeAllTableSchemas(out io.Writer, tables []Table) error {
+	fmt.Fprintf(out, "/* --------------------- TABLES --------------------- */\n\n")
+	if forceCaseInsensitive {
+		fmt.Fprintf(out, "-- enable case insensitive extension\n")
+		fmt.Fprintf(out, "create extension citext;\n\n")
+	}
+	for _, t := range tables {
+		if err := writeTableSchema(out, t.Name, t.Columns); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func writeAllTableData(db *sql.DB, out io.Writer, tables []Table) error {
+	for _, t := range tables {
+		if err := writeTableData(db, out, t.Name); err != nil {
+			return err
+		}
 	}
 	return nil
 }
