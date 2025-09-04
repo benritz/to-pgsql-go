@@ -293,6 +293,8 @@ func writeTableSchema(db *sql.DB, out io.Writer, table Table, incIndexes bool) e
 			columnDefs += "bytea"
 		} else if column.Type == "bit" {
 			columnDefs += "boolean"
+		} else if column.Type == "uniqueidentifier" {
+			columnDefs += "uuid"
 		} else {
 			columnDefs += column.Type
 		}
@@ -335,6 +337,10 @@ func writeTableData(db *sql.DB, out io.Writer, table string) error {
 	if err != nil {
 		return err
 	}
+	colTypes, err := rows.ColumnTypes()
+	if err != nil {
+		return err
+	}
 	n := 0
 	for rows.Next() {
 		values := make([]any, len(cols))
@@ -351,17 +357,49 @@ func writeTableData(db *sql.DB, out io.Writer, table string) error {
 			case nil:
 				valStrs[i] = "NULL"
 			case []byte:
-				if len(v) == 0 {
-					valStrs[i] = "'\\x'"
-				} else {
-					valStrs[i] = fmt.Sprintf("'\\x%x'", v)
+				t := strings.ToLower(colTypes[i].DatabaseTypeName())
+				switch t {
+				case "decimal", "numeric", "money", "smallmoney":
+					valStrs[i] = strings.TrimSpace(string(v))
+				case "uniqueidentifier":
+					if len(v) == 16 {
+						u := uuidFromBytes(v)
+						valStrs[i] = fmt.Sprintf("'%s'", u)
+					} else if len(v) == 0 {
+						valStrs[i] = "NULL"
+					} else {
+						valStrs[i] = fmt.Sprintf("'%s'", strings.ToLower(strings.TrimSpace(string(v))))
+					}
+				default:
+					if len(v) == 0 {
+						valStrs[i] = "'\\x'"
+					} else {
+						valStrs[i] = fmt.Sprintf("'\\x%x'", v)
+					}
 				}
 			case string:
-				valStrs[i] = fmt.Sprintf("'%s'", strings.ReplaceAll(v, "'", "''"))
+				t := strings.ToLower(colTypes[i].DatabaseTypeName())
+				switch t {
+				case "decimal", "numeric", "money", "smallmoney":
+					valStrs[i] = strings.TrimSpace(v)
+				case "uniqueidentifier":
+					valStrs[i] = fmt.Sprintf("'%s'", strings.ToLower(strings.TrimSpace(v)))
+				default:
+					valStrs[i] = fmt.Sprintf("'%s'", strings.ReplaceAll(v, "'", "''"))
+				}
 			case time.Time:
 				valStrs[i] = fmt.Sprintf("'%s'", v.UTC().Format("2006-01-02 15:04:05.999999Z07:00"))
 			default:
-				valStrs[i] = fmt.Sprintf("%v", v)
+				// For some drivers, DECIMAL/NUMERIC may arrive as custom types
+				t := strings.ToLower(colTypes[i].DatabaseTypeName())
+				switch t {
+				case "decimal", "numeric", "money", "smallmoney":
+					valStrs[i] = fmt.Sprintf("%v", v)
+				case "uniqueidentifier":
+					valStrs[i] = fmt.Sprintf("'%v'", v)
+				default:
+					valStrs[i] = fmt.Sprintf("%v", v)
+				}
 			}
 		}
 		if dataBatchSize == 1 {
@@ -635,4 +673,19 @@ func writeCompiledObject(db *sql.DB, out io.Writer, objType string) error {
 		fmt.Fprintf(out, ";\nGO\n\n")
 	}
 	return nil
+}
+
+// uuidFromBytes converts MSSQL uniqueidentifier raw bytes (mixed-endian)
+// into a canonical UUID string (xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx).
+func uuidFromBytes(b []byte) string {
+	if len(b) != 16 {
+		return ""
+	}
+	return fmt.Sprintf("%02x%02x%02x%02x-%02x%02x-%02x%02x-%02x%02x-%02x%02x%02x%02x%02x%02x",
+		b[3], b[2], b[1], b[0],
+		b[5], b[4],
+		b[7], b[6],
+		b[8], b[9],
+		b[10], b[11], b[12], b[13], b[14], b[15],
+	)
 }
