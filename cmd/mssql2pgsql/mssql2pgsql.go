@@ -15,6 +15,10 @@ import (
 var (
 	forceCaseInsensitive bool
 	incData              bool
+	incFunctions         bool
+	incTriggers          bool
+	incProcedures        bool
+	incViews             bool
 	dataBatchSize        int
 )
 
@@ -38,6 +42,10 @@ func main() {
 	var outputFile string
 	flag.BoolVar(&forceCaseInsensitive, "forceCaseInsensitive", true, "Use citext for case-insensitive text columns")
 	flag.BoolVar(&incData, "incData", false, "Include table data")
+	flag.BoolVar(&incFunctions, "incFunctions", false, "Include functions")
+	flag.BoolVar(&incProcedures, "incProcedures", false, "Include procedures")
+	flag.BoolVar(&incTriggers, "incTriggers", false, "Include triggers")
+	flag.BoolVar(&incViews, "incViews", false, "Include views")
 	flag.IntVar(&dataBatchSize, "dataBatchSize", 100, "Batch size for data inserts")
 	flag.Parse()
 
@@ -100,30 +108,34 @@ func main() {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
 	}
-	// if err := writeFunctions(db, out); err != nil {
-	// 	fmt.Fprintln(os.Stderr, err)
-	// 	os.Exit(1)
-	// }
-	//
-	// if err := writeDefaults(db, out); err != nil {
-	// 	fmt.Fprintln(os.Stderr, err)
-	// 	os.Exit(1)
-	// }
-	//
-	// if err := writeProcedures(db, out); err != nil {
-	// 	fmt.Fprintln(os.Stderr, err)
-	// 	os.Exit(1)
-	// }
-	//
-	// if err := writeViews(db, out); err != nil {
-	// 	fmt.Fprintln(os.Stderr, err)
-	// 	os.Exit(1)
-	// }
-	//
-	// if err := writeTriggers(db, out); err != nil {
-	// 	fmt.Fprintln(os.Stderr, err)
-	// 	os.Exit(1)
-	// }
+
+	if incFunctions {
+		if err := writeFunctions(db, out); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
+	}
+
+	if incProcedures {
+		if err := writeProcedures(db, out); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
+	}
+
+	if incViews {
+		if err := writeViews(db, out); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
+	}
+
+	if incTriggers {
+		if err := writeTriggers(db, out); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
+	}
 }
 
 func readTables(db *sql.DB) ([]Table, error) {
@@ -204,6 +216,11 @@ func writeTableSchema(db *sql.DB, out io.Writer, table Table, incIndexes bool) e
 		table.Name,
 		columnDefs,
 	)
+
+	if err := writeDefaults(db, out, &table); err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
 
 	if incIndexes {
 		if err := writeIndexes(db, out, &table); err != nil {
@@ -481,15 +498,25 @@ func writeFunctions(db *sql.DB, out io.Writer) error {
 	return writeCompiledObject(db, out, "FN")
 }
 
-func writeDefaults(db *sql.DB, out io.Writer) error {
-	fmt.Fprintf(out, "/* --------------------- DEFAULTS --------------------- */\n\n")
+func writeDefaults(db *sql.DB, out io.Writer, table *Table) error {
+	sql := "select t.name as table_name, c.name as column_name, ty.name as type, d.name as default_name, d.definition from sys.tables t, sys.columns c, sys.types ty, sys.default_constraints d where t.object_id = c.object_id and c.user_type_id = ty.user_type_id and t.object_id = d.parent_object_id and c.column_id = d.parent_column_id"
+	args := []any{}
 
-	rows, err := db.Query("select t.name as table_name, c.name as column_name, ty.name as type, d.name as default_name, d.definition from sys.tables t, sys.columns c, sys.types ty, sys.default_constraints d where t.object_id = c.object_id and c.user_type_id = ty.user_type_id and t.object_id = d.parent_object_id and c.column_id = d.parent_column_id order by t.name asc, t.object_id asc, c.column_id asc")
+	if table != nil {
+		sql += " and t.name = @p1"
+		args = append(args, table.Name)
+	}
+
+	sql += " order by t.name asc, t.object_id asc, c.column_id asc"
+
+	rows, err := db.Query(sql, args...)
 	if err != nil {
 		return err
 	}
 	defer rows.Close()
+
 	var lastTable string
+
 	for rows.Next() {
 		var tableName, columnName, colType, defaultName, definition string
 		if err := rows.Scan(&tableName, &columnName, &colType, &defaultName, &definition); err != nil {
@@ -500,9 +527,9 @@ func writeDefaults(db *sql.DB, out io.Writer) error {
 		}
 		lastTable = tableName
 		def := definition
-		def = strings.TrimPrefix(def, "((")
-		def = strings.TrimSuffix(def, "))")
-		def = strings.ReplaceAll(def, "(getdate())", "now()")
+		def = strings.TrimPrefix(def, "(")
+		def = strings.TrimSuffix(def, ")")
+		def = strings.ReplaceAll(def, "getdate()", "now()")
 		if colType == "bit" {
 			switch def {
 			case "1":
@@ -513,7 +540,9 @@ func writeDefaults(db *sql.DB, out io.Writer) error {
 		}
 		fmt.Fprintf(out, "alter table %s alter column %s set default %s;\n", tableName, columnName, def)
 	}
+
 	fmt.Fprintf(out, "\n")
+
 	return nil
 }
 
