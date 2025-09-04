@@ -159,10 +159,10 @@ func readTables(db *sql.DB) ([]Table, error) {
 	for rows.Next() {
 		var tableName, columnName, colType string
 		var columnID, maxLength, precision, scale int
-		var isNullable, isIdentity bool
+		var isNullable, isAutoInc bool
 		var def sql.NullString
 
-		if err := rows.Scan(&tableName, &columnID, &columnName, &maxLength, &precision, &scale, &isNullable, &isIdentity, &colType, &def); err != nil {
+		if err := rows.Scan(&tableName, &columnID, &columnName, &maxLength, &precision, &scale, &isNullable, &isAutoInc, &colType, &def); err != nil {
 			return nil, err
 		}
 
@@ -175,8 +175,12 @@ func readTables(db *sql.DB) ([]Table, error) {
 		}
 
 		defaultVal := ""
-		if def.Valid {
+		if !isAutoInc && def.Valid {
 			defaultVal = translateDefault(colType, def.String)
+			if strings.HasPrefix(strings.ToLower(strings.TrimSpace(defaultVal)), "next value for ") {
+				isAutoInc = true
+				defaultVal = ""
+			}
 		}
 
 		columns = append(columns, Column{
@@ -186,7 +190,7 @@ func readTables(db *sql.DB) ([]Table, error) {
 			Precision:  precision,
 			Scale:      scale,
 			IsNullable: isNullable,
-			IsAutoInc:  isIdentity,
+			IsAutoInc:  isAutoInc,
 			Type:       colType,
 			Default:    defaultVal,
 		})
@@ -225,8 +229,6 @@ func stripEnclosingParens(s string) string {
 	return s
 }
 
-// translateDefault converts a MSSQL default expression to a Postgres-friendly one.
-// It also normalizes wrappers and common function/bit conversions.
 func translateDefault(colType, def string) string {
 	if def == "" {
 		return ""
@@ -294,6 +296,9 @@ func writeTableSchema(db *sql.DB, out io.Writer, table Table, incIndexes bool) e
 		} else {
 			columnDefs += column.Type
 		}
+		if column.Default != "" && !column.IsAutoInc {
+			columnDefs += " default " + column.Default
+		}
 		if !column.IsNullable {
 			columnDefs += " not"
 		}
@@ -308,11 +313,6 @@ func writeTableSchema(db *sql.DB, out io.Writer, table Table, incIndexes bool) e
 		table.Name,
 		columnDefs,
 	)
-
-	if err := writeDefaults(db, out, &table); err != nil {
-		fmt.Fprintln(os.Stderr, err)
-		os.Exit(1)
-	}
 
 	if incIndexes {
 		if err := writeIndexes(db, out, &table); err != nil {
@@ -588,43 +588,6 @@ func writeFunctions(db *sql.DB, out io.Writer) error {
 	fmt.Fprintf(out, "/* --------------------- FUNCTIONS --------------------- */\n\n")
 	fmt.Fprintf(out, "/* -- These functions contain T-SQL and MUST be rewritten for PGSQL -- */\n\n")
 	return writeCompiledObject(db, out, "FN")
-}
-
-func writeDefaults(db *sql.DB, out io.Writer, table *Table) error {
-	sql := "select t.name as table_name, c.name as column_name, ty.name as type, d.name as default_name, d.definition from sys.tables t, sys.columns c, sys.types ty, sys.default_constraints d where t.object_id = c.object_id and c.user_type_id = ty.user_type_id and t.object_id = d.parent_object_id and c.column_id = d.parent_column_id"
-	args := []any{}
-
-	if table != nil {
-		sql += " and t.name = @p1"
-		args = append(args, table.Name)
-	}
-
-	sql += " order by t.name asc, t.object_id asc, c.column_id asc"
-
-	rows, err := db.Query(sql, args...)
-	if err != nil {
-		return err
-	}
-	defer rows.Close()
-
-	var lastTable string
-
-	for rows.Next() {
-		var tableName, columnName, colType, defaultName, definition string
-		if err := rows.Scan(&tableName, &columnName, &colType, &defaultName, &definition); err != nil {
-			return err
-		}
-		if lastTable != "" && lastTable != tableName {
-			fmt.Fprintf(out, "\n")
-		}
-		lastTable = tableName
-		def := translateDefault(colType, definition)
-		fmt.Fprintf(out, "alter table %s alter column %s set default %s;\n", tableName, columnName, def)
-	}
-
-	fmt.Fprintf(out, "\n")
-
-	return nil
 }
 
 func writeProcedures(db *sql.DB, out io.Writer) error {
