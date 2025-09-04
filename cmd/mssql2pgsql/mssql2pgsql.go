@@ -14,7 +14,7 @@ import (
 
 var (
 	forceCaseInsensitive bool
-	writeData            bool
+	incData              bool
 	dataBatchSize        int
 )
 
@@ -37,7 +37,7 @@ type Table struct {
 func main() {
 	var outputFile string
 	flag.BoolVar(&forceCaseInsensitive, "forceCaseInsensitive", true, "Use citext for case-insensitive text columns")
-	flag.BoolVar(&writeData, "writeData", false, "Write table data")
+	flag.BoolVar(&incData, "incData", false, "Include table data")
 	flag.IntVar(&dataBatchSize, "dataBatchSize", 100, "Batch size for data inserts")
 	flag.Parse()
 
@@ -78,18 +78,28 @@ func main() {
 		os.Exit(1)
 	}
 
-	if err := writeAllTableSchemas(db, out, tables); err != nil {
+	if err := writeAllTableSchemas(db, out, tables, !incData); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
 	}
 
-	if writeData {
+	if incData {
 		if err := writeAllTableData(db, out, tables); err != nil {
 			fmt.Fprintln(os.Stderr, err)
 			os.Exit(1)
 		}
+
+		if err := writeIndexes(db, out, nil); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
+
 	}
 
+	if err := writeForeignKeys(db, out, nil); err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
 	// if err := writeFunctions(db, out); err != nil {
 	// 	fmt.Fprintln(os.Stderr, err)
 	// 	os.Exit(1)
@@ -148,9 +158,9 @@ func readTables(db *sql.DB) ([]Table, error) {
 	return tables, nil
 }
 
-func writeTableSchema(db *sql.DB, out io.Writer, table string, columns []Column) error {
+func writeTableSchema(db *sql.DB, out io.Writer, table Table, incIndexes bool) error {
 	columnDefs := ""
-	for i, column := range columns {
+	for i, column := range table.Columns {
 		if i > 0 {
 			columnDefs += ",\n"
 		}
@@ -171,7 +181,7 @@ func writeTableSchema(db *sql.DB, out io.Writer, table string, columns []Column)
 					columnDefs += fmt.Sprintf("varchar(%d)", maxLen)
 				}
 			}
-		} else if column.Type == "datetime" {
+		} else if column.Type == "datetime" || column.Type == "smalldatetime" || column.Type == "date" || column.Type == "time" || column.Type == "datetime2" {
 			columnDefs += "timestamp"
 		} else if column.Type == "image" {
 			columnDefs += "bytea"
@@ -186,14 +196,19 @@ func writeTableSchema(db *sql.DB, out io.Writer, table string, columns []Column)
 		columnDefs += " null"
 	}
 
-	fmt.Fprintf(out, "/* -- %s -- */\ndrop table if exists %s;\n\ncreate table %s\n(\n%s\n);\n\n", table, table, table, columnDefs)
+	fmt.Fprintf(
+		out,
+		"/* -- %s -- */\ndrop table if exists %s;\n\ncreate table %s\n(\n%s\n);\n\n",
+		table.Name,
+		table.Name,
+		table.Name,
+		columnDefs,
+	)
 
-	if err := writeIndexes(db, out, table); err != nil {
-		return err
-	}
-
-	if err := writeForeignKeys(db, out, table); err != nil {
-		return err
+	if incIndexes {
+		if err := writeIndexes(db, out, &table); err != nil {
+			return err
+		}
 	}
 
 	return nil
@@ -260,17 +275,19 @@ func writeTableData(db *sql.DB, out io.Writer, table string) error {
 	return nil
 }
 
-func writeAllTableSchemas(db *sql.DB, out io.Writer, tables []Table) error {
+func writeAllTableSchemas(db *sql.DB, out io.Writer, tables []Table, incConstraints bool) error {
 	fmt.Fprintf(out, "/* --------------------- TABLES --------------------- */\n\n")
+
 	if forceCaseInsensitive {
-		fmt.Fprintf(out, "-- enable case insensitive extension\n")
 		fmt.Fprintf(out, "create extension if not exists citext;\n\n")
 	}
+
 	for _, t := range tables {
-		if err := writeTableSchema(db, out, t.Name, t.Columns); err != nil {
+		if err := writeTableSchema(db, out, t, incConstraints); err != nil {
 			return err
 		}
 	}
+
 	return nil
 }
 
@@ -322,18 +339,33 @@ end; $$ ;
 	fmt.Fprintf(out, "select relname, setval(oid, seq_field_max_value(oid)) from pg_class where relkind = 'S';\n\n")
 }
 
-func writeIndexes(db *sql.DB, out io.Writer, table string) error {
-	rows, err := db.Query("select t.name as table_name, c.name as column_name, i.name as index_name, ic.index_column_id, i.is_primary_key, i.is_unique_constraint, i.is_unique from sys.indexes i, sys.index_columns ic, sys.tables t, sys.columns c where i.object_id = t.object_id and ic.object_id = t.object_id and ic.index_id = i.index_id and t.object_id = c.object_id and ic.column_id = c.column_id and t.name = @p1 order by t.name asc, t.object_id asc, i.index_id asc, ic.index_column_id asc", table)
+func writeIndexes(db *sql.DB, out io.Writer, table *Table) error {
+	sql := "select t.name as table_name, c.name as column_name, i.name as index_name, ic.index_column_id, i.is_primary_key, i.is_unique_constraint, i.is_unique from sys.indexes i, sys.index_columns ic, sys.tables t, sys.columns c where i.object_id = t.object_id and ic.object_id = t.object_id and ic.index_id = i.index_id and t.object_id = c.object_id and ic.column_id = c.column_id"
+	args := []any{}
+
+	if table != nil {
+		sql += " and t.name = @p1 "
+		args = append(args, table.Name)
+	}
+
+	sql += " order by t.name asc, t.object_id asc, i.index_id asc, ic.index_column_id asc"
+
+	rows, err := db.Query(
+		sql,
+		args...,
+	)
 	if err != nil {
 		return err
 	}
 	defer rows.Close()
+
 	var (
 		lastTable, lastIndex               string
 		columns                            []string
 		isPrimary, isUniqueConst, isUnique bool
 		first                              bool = true
 	)
+
 	for rows.Next() {
 		var tableName, columnName, indexName string
 		var indexColumnID int
@@ -367,6 +399,7 @@ func writeIndexes(db *sql.DB, out io.Writer, table string) error {
 		}
 		columns = append(columns, columnName)
 	}
+
 	if !first {
 		if isPrimary {
 			fmt.Fprintf(out, "alter table %s add constraint %s primary key (%s);\n", lastTable, lastIndex, strings.Join(columns, ", "))
@@ -379,22 +412,37 @@ func writeIndexes(db *sql.DB, out io.Writer, table string) error {
 		}
 		fmt.Fprintf(out, "\n")
 	}
+
 	return nil
 }
 
-func writeForeignKeys(db *sql.DB, out io.Writer, table string) error {
-	fmt.Fprintf(out, "/* --------------------- FOREIGN KEYS --------------------- */\n\n")
+func writeForeignKeys(db *sql.DB, out io.Writer, table *Table) error {
+	if table == nil {
+		fmt.Fprintf(out, "/* --------------------- FOREIGN KEYS --------------------- */\n\n")
+	}
 
-	rows, err := db.Query("select fk.name as key_name, t.name as parent_table, c.name as parent_column, rt.name as referenced_table, rc.name as referenced_column, fkc.constraint_column_id as constraint_column_id from sys.tables t, sys.tables rt, sys.columns c, sys.columns rc, sys.foreign_keys fk, sys.foreign_key_columns fkc where fk.object_id = fkc.constraint_object_id and t.object_id = fk.parent_object_id and fkc.parent_column_id = c.column_id and c.object_id = t.object_id and rt.object_id = fk.referenced_object_id and fkc.referenced_column_id = rc.column_id and rc.object_id = rt.object_id and t.name = @p1 order by fk.object_id asc, fkc.constraint_column_id asc", table)
+	sql := "select fk.name as key_name, t.name as parent_table, c.name as parent_column, rt.name as referenced_table, rc.name as referenced_column, fkc.constraint_column_id as constraint_column_id from sys.tables t, sys.tables rt, sys.columns c, sys.columns rc, sys.foreign_keys fk, sys.foreign_key_columns fkc where fk.object_id = fkc.constraint_object_id and t.object_id = fk.parent_object_id and fkc.parent_column_id = c.column_id and c.object_id = t.object_id and rt.object_id = fk.referenced_object_id and fkc.referenced_column_id = rc.column_id and rc.object_id = rt.object_id"
+	args := []any{}
+
+	if table != nil {
+		sql += " and t.name = @p1"
+		args = append(args, table.Name)
+	}
+
+	sql += " order by fk.object_id asc, fkc.constraint_column_id asc"
+
+	rows, err := db.Query(sql, args...)
 	if err != nil {
 		return err
 	}
 	defer rows.Close()
+
 	var (
 		key, parentTable, referencedTable string
 		parentColumns, referencedColumns  []string
 		first                             bool = true
 	)
+
 	for rows.Next() {
 		var keyName, pTable, pColumn, rTable, rColumn string
 		var constraintColumnID int
@@ -418,10 +466,12 @@ func writeForeignKeys(db *sql.DB, out io.Writer, table string) error {
 		parentColumns = append(parentColumns, pColumn)
 		referencedColumns = append(referencedColumns, rColumn)
 	}
+
 	if !first {
 		fmt.Fprintf(out, "alter table %s add constraint %s foreign key (%s) references %s (%s);\n", parentTable, key, strings.Join(parentColumns, ", "), referencedTable, strings.Join(referencedColumns, ", "))
 		fmt.Fprintf(out, "\n")
 	}
+
 	return nil
 }
 
