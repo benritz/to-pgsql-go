@@ -31,6 +31,7 @@ type Column struct {
 	IsNullable bool
 	IsAutoInc  bool
 	Type       string
+	Default    string
 }
 
 type Table struct {
@@ -139,7 +140,14 @@ func main() {
 }
 
 func readTables(db *sql.DB) ([]Table, error) {
-	rows, err := db.Query("select t.name as table_name, c.column_id, c.name as column_name, c.max_length, c.precision, c.scale, c.is_nullable, c.is_identity, ty.name as type from sys.tables t, sys.columns c, sys.types ty where t.object_id = c.object_id and c.user_type_id = ty.user_type_id order by t.name asc, t.object_id asc, c.column_id asc")
+	rows, err := db.Query(
+		"select t.name as table_name, c.column_id, c.name as column_name, c.max_length, c.precision, c.scale, c.is_nullable, c.is_identity, ty.name as type, d.definition " +
+			"from sys.tables t " +
+			"join sys.columns c on t.object_id = c.object_id " +
+			"join sys.types ty on c.user_type_id = ty.user_type_id " +
+			"left join sys.default_constraints d on d.parent_object_id = c.object_id and d.parent_column_id = c.column_id " +
+			"order by t.name asc, t.object_id asc, c.column_id asc",
+	)
 	if err != nil {
 		return nil, err
 	}
@@ -152,9 +160,12 @@ func readTables(db *sql.DB) ([]Table, error) {
 		var tableName, columnName, colType string
 		var columnID, maxLength, precision, scale int
 		var isNullable, isIdentity bool
-		if err := rows.Scan(&tableName, &columnID, &columnName, &maxLength, &precision, &scale, &isNullable, &isIdentity, &colType); err != nil {
+		var def sql.NullString
+
+		if err := rows.Scan(&tableName, &columnID, &columnName, &maxLength, &precision, &scale, &isNullable, &isIdentity, &colType, &def); err != nil {
 			return nil, err
 		}
+
 		if columnID == 1 {
 			if lastTable != "" {
 				tables = append(tables, Table{Name: lastTable, Columns: columns})
@@ -162,12 +173,93 @@ func readTables(db *sql.DB) ([]Table, error) {
 			lastTable = tableName
 			columns = []Column{}
 		}
-		columns = append(columns, Column{ColumnID: columnID, Name: columnName, MaxLength: maxLength, Precision: precision, Scale: scale, IsNullable: isNullable, IsAutoInc: isIdentity, Type: colType})
+
+		defaultVal := ""
+		if def.Valid {
+			defaultVal = translateDefault(colType, def.String)
+		}
+
+		columns = append(columns, Column{
+			ColumnID:   columnID,
+			Name:       columnName,
+			MaxLength:  maxLength,
+			Precision:  precision,
+			Scale:      scale,
+			IsNullable: isNullable,
+			IsAutoInc:  isIdentity,
+			Type:       colType,
+			Default:    defaultVal,
+		})
 	}
 	if lastTable != "" {
 		tables = append(tables, Table{Name: lastTable, Columns: columns})
 	}
 	return tables, nil
+}
+
+// stripEnclosingParens removes full wrapping parentheses like ((...))
+// by stripping one outer layer at a time only when that pair encloses
+// the entire expression.
+func stripEnclosingParens(s string) string {
+	s = strings.TrimSpace(s)
+	for len(s) >= 2 && s[0] == '(' && s[len(s)-1] == ')' {
+		depth := 0
+		endAt := -1
+		for i := 0; i < len(s); i++ {
+			switch s[i] {
+			case '(':
+				depth++
+			case ')':
+				depth--
+			}
+			if depth == 0 {
+				endAt = i
+				break
+			}
+		}
+		if endAt != len(s)-1 {
+			break
+		}
+		s = strings.TrimSpace(s[1 : len(s)-1])
+	}
+	return s
+}
+
+// translateDefault converts a MSSQL default expression to a Postgres-friendly one.
+// It also normalizes wrappers and common function/bit conversions.
+func translateDefault(colType, def string) string {
+	if def == "" {
+		return ""
+	}
+	v := stripEnclosingParens(def)
+
+	// Normalize NVARCHAR literal prefix: N'...'
+	if strings.HasPrefix(v, "N'") && len(v) >= 3 {
+		v = "'" + v[2:]
+	}
+
+	// MSSQL datetime-now equivalents -> Postgres
+	if strings.EqualFold(v, "getutcdate()") {
+		v = "now() at time zone 'utc'"
+	} else if strings.EqualFold(v, "getdate()") || strings.EqualFold(v, "sysdatetime()") || strings.EqualFold(v, "current_timestamp") {
+		v = "now()"
+	}
+
+	// bit -> boolean mapping
+	if strings.EqualFold(colType, "bit") {
+		unquoted := v
+		if len(unquoted) >= 2 && unquoted[0] == '\'' && unquoted[len(unquoted)-1] == '\'' {
+			unquoted = unquoted[1 : len(unquoted)-1]
+		}
+		switch unquoted {
+		case "1", "-1":
+			v = "true"
+		case "0":
+			v = "false"
+		}
+	}
+
+	return v
 }
 
 func writeTableSchema(db *sql.DB, out io.Writer, table Table, incIndexes bool) error {
@@ -526,18 +618,7 @@ func writeDefaults(db *sql.DB, out io.Writer, table *Table) error {
 			fmt.Fprintf(out, "\n")
 		}
 		lastTable = tableName
-		def := definition
-		def = strings.TrimPrefix(def, "(")
-		def = strings.TrimSuffix(def, ")")
-		def = strings.ReplaceAll(def, "getdate()", "now()")
-		if colType == "bit" {
-			switch def {
-			case "1":
-				def = "true"
-			case "0":
-				def = "false"
-			}
-		}
+		def := translateDefault(colType, definition)
 		fmt.Fprintf(out, "alter table %s alter column %s set default %s;\n", tableName, columnName, def)
 	}
 
