@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"regexp"
 	"strings"
 	"time"
 
@@ -21,6 +22,16 @@ var (
 	incProcedures        bool
 	incViews             bool
 	dataBatchSize        int
+)
+
+// Precompiled regexes for view normalization
+var (
+	reAsSingleAlias = regexp.MustCompile(`(?i)\bas\s*'([^']+)'`)
+	reAsDoubleAlias = regexp.MustCompile(`(?i)\bas\s*"([^"]+)"`)
+	reNLiteral      = regexp.MustCompile(`(?i)\bN'((?:[^']|'')*)'`)
+	reConcatLeft    = regexp.MustCompile(`(?i)(N?'(?:[^']|'')*')\s*\+\s*`)
+	reConcatRight   = regexp.MustCompile(`(?i)\s*\+\s*(N?'(?:[^']|'')*')`)
+	reTrailingGo    = regexp.MustCompile(`(?mi)(?:\r?\n)[ \t]*GO[ \t]*\s*$`)
 )
 
 type Column struct {
@@ -41,7 +52,6 @@ type Table struct {
 }
 
 func main() {
-	var outputFile string
 	flag.BoolVar(&forceCaseInsensitive, "forceCaseInsensitive", true, "Use citext for case-insensitive text columns")
 	flag.BoolVar(&incSchema, "incSchema", false, "Include table schema")
 	flag.BoolVar(&incData, "incData", false, "Include table data")
@@ -65,7 +75,7 @@ func main() {
 	if len(args) == 1 {
 		out = os.Stdout
 	} else {
-		outputFile = args[1]
+		outputFile := args[1]
 		f, err := os.Create(outputFile)
 		if err != nil {
 			fmt.Fprintln(os.Stderr, "Failed to create output file:", err)
@@ -664,7 +674,34 @@ func writeCompiledObject(db *sql.DB, out io.Writer, objType string) error {
 		return err
 	}
 	defer rows.Close()
-	var n int
+
+	var (
+		buf     strings.Builder
+		started bool
+	)
+
+	flush := func() error {
+		if !started {
+			return nil
+		}
+		content := buf.String()
+		if objType == "V" {
+			content = normalizeViewText(content)
+			content = strings.TrimSpace(content)
+			fmt.Fprint(out, content)
+			if strings.HasSuffix(strings.TrimSpace(content), ";") {
+				fmt.Fprint(out, "\n\n")
+			} else {
+				fmt.Fprint(out, ";\n\n")
+			}
+		} else {
+			fmt.Fprint(out, content)
+			fmt.Fprintf(out, ";\nGO\n\n")
+		}
+		buf.Reset()
+		return nil
+	}
+
 	for rows.Next() {
 		var text string
 		var colid int
@@ -672,17 +709,43 @@ func writeCompiledObject(db *sql.DB, out io.Writer, objType string) error {
 			return err
 		}
 		if colid == 1 {
-			if n > 0 {
-				fmt.Fprintf(out, ";\nGO\n\n")
+			if err := flush(); err != nil {
+				return err
 			}
-			n++
+			started = true
 		}
-		fmt.Fprint(out, strings.TrimSpace(text))
+		buf.WriteString(strings.TrimSpace(text))
 	}
-	if n > 0 {
-		fmt.Fprintf(out, ";\nGO\n\n")
+	if err := flush(); err != nil {
+		return err
 	}
 	return nil
+}
+
+// normalizeViewText applies MSSQL->Postgres textual tweaks for views.
+// - Strip single quotes around aliases: AS 'Alias' => AS Alias
+// - Strip double quotes around aliases: AS "Alias" => AS Alias
+// - Remove Unicode literal prefix: N'...' => '...'
+// - Convert string concatenation: 'a' + col => 'a' || col; col + 'b' => col || 'b'
+// - Remove trailing batch terminator line GO
+func normalizeViewText(s string) string {
+	// Remove Unicode string literal prefix N'...'
+	s = reNLiteral.ReplaceAllString(s, `'${1}'`)
+
+	// Handle patterns like: AS 'COMMERCE_TYPE' (case-insensitive AS, optional spaces)
+	s = reAsSingleAlias.ReplaceAllString(s, "AS $1")
+
+	// Handle patterns like: AS "COMMERCE_TYPE"
+	s = reAsDoubleAlias.ReplaceAllString(s, "AS $1")
+
+	// Convert string concatenation when at least one side is a string literal (supports N'...')
+	s = reConcatLeft.ReplaceAllString(s, "$1 || ")
+	s = reConcatRight.ReplaceAllString(s, " || $1")
+
+	// Remove trailing GO on final line, if present
+	s = reTrailingGo.ReplaceAllString(s, "\n")
+
+	return s
 }
 
 // uuidFromBytes converts MSSQL uniqueidentifier raw bytes (mixed-endian)
