@@ -14,6 +14,7 @@ import (
 
 var (
 	forceCaseInsensitive bool
+	incSchema            bool
 	incData              bool
 	incFunctions         bool
 	incTriggers          bool
@@ -42,6 +43,7 @@ type Table struct {
 func main() {
 	var outputFile string
 	flag.BoolVar(&forceCaseInsensitive, "forceCaseInsensitive", true, "Use citext for case-insensitive text columns")
+	flag.BoolVar(&incSchema, "incSchema", false, "Include table schema")
 	flag.BoolVar(&incData, "incData", false, "Include table data")
 	flag.BoolVar(&incFunctions, "incFunctions", false, "Include functions")
 	flag.BoolVar(&incProcedures, "incProcedures", false, "Include procedures")
@@ -87,9 +89,11 @@ func main() {
 		os.Exit(1)
 	}
 
-	if err := writeAllTableSchemas(db, out, tables, !incData); err != nil {
-		fmt.Fprintln(os.Stderr, err)
-		os.Exit(1)
+	if incSchema {
+		if err := writeAllTableSchemas(db, out, tables, !incData); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
 	}
 
 	if incData {
@@ -105,9 +109,11 @@ func main() {
 
 	}
 
-	if err := writeForeignKeys(db, out, nil); err != nil {
-		fmt.Fprintln(os.Stderr, err)
-		os.Exit(1)
+	if incSchema {
+		if err := writeForeignKeys(db, out, nil); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
 	}
 
 	if incFunctions {
