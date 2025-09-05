@@ -685,6 +685,7 @@ func writeCompiledObject(db *sql.DB, out io.Writer, objType string) error {
 			return nil
 		}
 		content := buf.String()
+		content = normalizeLineEndings(content)
 		if objType == "V" {
 			content = normalizeViewText(content)
 			content = strings.TrimSpace(content)
@@ -720,6 +721,13 @@ func writeCompiledObject(db *sql.DB, out io.Writer, objType string) error {
 		return err
 	}
 	return nil
+}
+
+// normalizeLineEndings converts CRLF/CR to LF for portable SQL output
+func normalizeLineEndings(s string) string {
+	s = strings.ReplaceAll(s, "\r\n", "\n")
+	s = strings.ReplaceAll(s, "\r", "\n")
+	return s
 }
 
 // normalizeViewText applies MSSQL->Postgres textual tweaks for views.
