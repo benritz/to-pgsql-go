@@ -717,3 +717,123 @@ func uuidFromBytes(b []byte) string {
 		b[10], b[11], b[12], b[13], b[14], b[15],
 	)
 }
+
+func convertValue(val any, dbType string) any {
+	switch v := val.(type) {
+	case nil:
+		return nil
+	case []byte:
+		switch dbType {
+		case "decimal", "numeric", "money", "smallmoney":
+			return strings.TrimSpace(string(v))
+		case "uniqueidentifier":
+			if len(v) == 16 {
+				return uuidFromBytes(v)
+			} else if len(v) == 0 {
+				return nil
+			}
+			return strings.ToLower(strings.TrimSpace(string(v)))
+		case "bit":
+			if len(v) > 0 && v[0] != 0 {
+				return true
+			}
+			return false
+		default:
+			return v
+		}
+	case string:
+		switch dbType {
+		case "decimal", "numeric", "money", "smallmoney":
+			return strings.TrimSpace(v)
+		case "uniqueidentifier":
+			return strings.ToLower(strings.TrimSpace(v))
+		default:
+			return v
+		}
+	case time.Time:
+		return v.UTC()
+	default:
+		return v
+	}
+}
+
+func quotedIdentifier(name string) string {
+	return "\"" + strings.ReplaceAll(name, "\"", "\"\"") + "\""
+}
+
+func copyTableData(src, dst *sql.DB, table string) error {
+	query := fmt.Sprintf("select * from %s", table)
+	rows, err := src.Query(query)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+
+	cols, err := rows.Columns()
+	if err != nil {
+		return err
+	}
+
+	colTypes, err := rows.ColumnTypes()
+	if err != nil {
+		return err
+	}
+
+	quotedCols := make([]string, len(cols))
+	placeholders := make([]string, len(cols))
+	for i, c := range cols {
+		quotedCols[i] = quotedIdentifier(c)
+		placeholders[i] = fmt.Sprintf("$%d", i+1)
+	}
+
+	sql := fmt.Sprintf(
+		"insert into %s (%s) values (%s)",
+		quotedIdentifier(table),
+		strings.Join(quotedCols, ", "),
+		strings.Join(placeholders, ", "),
+	)
+
+	tx, err := dst.Begin()
+	if err != nil {
+		return err
+	}
+
+	stmt, err := tx.Prepare(sql)
+	if err != nil {
+		_ = tx.Rollback()
+		return err
+	}
+	defer stmt.Close()
+
+	values := make([]any, len(cols))
+	valuePtrs := make([]any, len(cols))
+	for i := range values {
+		valuePtrs[i] = &values[i]
+	}
+
+	args := make([]any, len(cols))
+
+	for rows.Next() {
+		if err := rows.Scan(valuePtrs...); err != nil {
+			_ = tx.Rollback()
+			return err
+		}
+
+		for i := range values {
+			dbType := strings.ToLower(colTypes[i].DatabaseTypeName())
+			args[i] = convertValue(values[i], dbType)
+		}
+
+		if _, err := stmt.Exec(args...); err != nil {
+			_ = tx.Rollback()
+			return err
+		}
+	}
+
+	if err := rows.Err(); err != nil {
+		_ = tx.Rollback()
+		return err
+	}
+
+	return tx.Commit()
+}
