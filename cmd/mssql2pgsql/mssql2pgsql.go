@@ -13,13 +13,13 @@ import (
 )
 
 var (
-	forceCaseInsensitive bool
-	incData              bool
-	incFunctions         bool
-	incTriggers          bool
-	incProcedures        bool
-	incViews             bool
-	dataBatchSize        int
+	textType      string
+	incData       bool
+	incFunctions  bool
+	incTriggers   bool
+	incProcedures bool
+	incViews      bool
+	dataBatchSize int
 )
 
 type Column struct {
@@ -41,7 +41,7 @@ type Table struct {
 
 func main() {
 	var outputFile string
-	flag.BoolVar(&forceCaseInsensitive, "forceCaseInsensitive", true, "Use citext for case-insensitive text columns")
+	flag.StringVar(&textType, "textType", "citext", "How to convert the text column types. Either text, citext or varchar (default).")
 	flag.BoolVar(&incData, "incData", false, "Include table data")
 	flag.BoolVar(&incFunctions, "incFunctions", false, "Include functions")
 	flag.BoolVar(&incProcedures, "incProcedures", false, "Include procedures")
@@ -274,9 +274,12 @@ func writeTableSchema(db *sql.DB, out io.Writer, table Table, incIndexes bool) e
 		if column.IsAutoInc {
 			columnDefs += "serial"
 		} else if column.Type == "varchar" || column.Type == "nvarchar" || column.Type == "text" || column.Type == "ntext" || (column.Type == "char" && column.MaxLength > 1) {
-			if forceCaseInsensitive {
+			switch textType {
+			case "text":
+				columnDefs += "text"
+			case "citext":
 				columnDefs += "citext"
-			} else {
+			default:
 				if column.MaxLength == -1 {
 					columnDefs += "text"
 				} else {
@@ -287,7 +290,11 @@ func writeTableSchema(db *sql.DB, out io.Writer, table Table, incIndexes bool) e
 					columnDefs += fmt.Sprintf("varchar(%d)", maxLen)
 				}
 			}
-		} else if column.Type == "datetime" || column.Type == "smalldatetime" || column.Type == "date" || column.Type == "time" || column.Type == "datetime2" {
+		} else if column.Type == "datetime" ||
+			column.Type == "smalldatetime" ||
+			column.Type == "date" ||
+			column.Type == "time" ||
+			column.Type == "datetime2" {
 			columnDefs += "timestamp"
 		} else if column.Type == "image" {
 			columnDefs += "bytea"
@@ -295,6 +302,8 @@ func writeTableSchema(db *sql.DB, out io.Writer, table Table, incIndexes bool) e
 			columnDefs += "boolean"
 		} else if column.Type == "uniqueidentifier" {
 			columnDefs += "uuid"
+		} else if column.Type == "money" {
+			columnDefs += "numeric(19, 4)"
 		} else {
 			columnDefs += column.Type
 		}
@@ -425,7 +434,7 @@ func writeTableData(db *sql.DB, out io.Writer, table string) error {
 func writeAllTableSchemas(db *sql.DB, out io.Writer, tables []Table, incConstraints bool) error {
 	fmt.Fprintf(out, "/* --------------------- TABLES --------------------- */\n\n")
 
-	if forceCaseInsensitive {
+	if textType == "citext" {
 		fmt.Fprintf(out, "create extension if not exists citext;\n\n")
 	}
 
