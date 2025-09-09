@@ -13,12 +13,13 @@ import (
 )
 
 var (
-	textType      string
 	incData       bool
+	incTables     bool
 	incFunctions  bool
 	incTriggers   bool
 	incProcedures bool
 	incViews      bool
+	textType      string
 	dataBatchSize int
 )
 
@@ -43,6 +44,7 @@ func main() {
 	var outputFile string
 	flag.StringVar(&textType, "textType", "citext", "How to convert the text column types. Either text, citext or varchar (default).")
 	flag.BoolVar(&incData, "incData", false, "Include table data")
+	flag.BoolVar(&incTables, "incTables", false, "Include tables schema")
 	flag.BoolVar(&incFunctions, "incFunctions", false, "Include functions")
 	flag.BoolVar(&incProcedures, "incProcedures", false, "Include procedures")
 	flag.BoolVar(&incTriggers, "incTriggers", false, "Include triggers")
@@ -87,9 +89,11 @@ func main() {
 		os.Exit(1)
 	}
 
-	if err := writeAllTableSchemas(db, out, tables, !incData); err != nil {
-		fmt.Fprintln(os.Stderr, err)
-		os.Exit(1)
+	if incTables {
+		if err := writeAllTableSchemas(db, out, tables, !incData); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
 	}
 
 	if incData {
@@ -102,7 +106,6 @@ func main() {
 			fmt.Fprintln(os.Stderr, err)
 			os.Exit(1)
 		}
-
 	}
 
 	if err := writeForeignKeys(db, out, nil); err != nil {
@@ -350,17 +353,22 @@ func writeTableData(db *sql.DB, out io.Writer, table string) error {
 	if err != nil {
 		return err
 	}
+
 	n := 0
 	for rows.Next() {
 		values := make([]any, len(cols))
 		valuePtrs := make([]any, len(cols))
+
 		for i := range values {
 			valuePtrs[i] = &values[i]
 		}
+
 		if err := rows.Scan(valuePtrs...); err != nil {
 			return err
 		}
+
 		valStrs := make([]string, len(cols))
+
 		for i, val := range values {
 			switch v := val.(type) {
 			case nil:
@@ -411,6 +419,7 @@ func writeTableData(db *sql.DB, out io.Writer, table string) error {
 				}
 			}
 		}
+
 		if dataBatchSize == 1 {
 			fmt.Fprintf(out, "insert into %s values (%s);\n", table, strings.Join(valStrs, ", "))
 		} else {
@@ -425,9 +434,11 @@ func writeTableData(db *sql.DB, out io.Writer, table string) error {
 		}
 		n++
 	}
+
 	if n > 0 {
 		fmt.Fprintf(out, ";\n\n")
 	}
+
 	return nil
 }
 
@@ -448,6 +459,8 @@ func writeAllTableSchemas(db *sql.DB, out io.Writer, tables []Table, incConstrai
 }
 
 func writeAllTableData(db *sql.DB, out io.Writer, tables []Table) error {
+	fmt.Fprintf(out, "set session_replication_role = 'replica';")
+
 	for _, t := range tables {
 		if err := writeTableData(db, out, t.Name); err != nil {
 			return err
@@ -455,6 +468,8 @@ func writeAllTableData(db *sql.DB, out io.Writer, tables []Table) error {
 	}
 
 	writeSeqReset(out)
+
+	fmt.Fprintf(out, "set session_replication_role = 'origin';")
 
 	return nil
 }
