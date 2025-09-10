@@ -1,4 +1,4 @@
-package pgsql
+package mssql
 
 import (
 	"database/sql"
@@ -41,6 +41,7 @@ t.name asc, t.object_id asc, c.column_id asc`,
 		var tableName, columnName, colType, defaultValue string
 		var columnID, maxLength, precision, scale int
 		var isNullable, isComputed, isAutoInc bool
+		var defaultValueOrNull sql.NullString
 
 		if err := rows.Scan(
 			&tableName,
@@ -53,7 +54,7 @@ t.name asc, t.object_id asc, c.column_id asc`,
 			&isAutoInc,
 			&isComputed,
 			&colType,
-			&defaultValue,
+			&defaultValueOrNull,
 		); err != nil {
 			return nil, err
 		}
@@ -66,9 +67,14 @@ t.name asc, t.object_id asc, c.column_id asc`,
 			columns = []types.Column{}
 		}
 
-		if !isAutoInc &&
-			strings.HasPrefix(strings.ToLower(strings.TrimSpace(defaultValue)), "next value for ") {
-			isAutoInc = true
+		defaultValue = ""
+		if defaultValueOrNull.Valid {
+			defaultValue = defaultValueOrNull.String
+
+			if !isAutoInc &&
+				strings.HasPrefix(strings.ToLower(strings.TrimSpace(defaultValue)), "next value for ") {
+				isAutoInc = true
+			}
 		}
 
 		columns = append(columns, types.Column{
