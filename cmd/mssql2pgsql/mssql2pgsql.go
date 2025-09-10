@@ -15,6 +15,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"benritz/topgsql/internal/dialect/mssql"
+	"benritz/topgsql/internal/dialect/pgsql"
 	"benritz/topgsql/internal/schema"
 )
 
@@ -195,9 +196,6 @@ func isConnectionUrl(url string) bool {
 	return !strings.HasPrefix(url, "file://") && strings.Contains(url, "://")
 }
 
-// stripEnclosingParens removes full wrapping parentheses like ((...))
-// by stripping one outer layer at a time only when that pair encloses
-// the entire expression.
 func stripEnclosingParens(s string) string {
 	s = strings.TrimSpace(s)
 	for len(s) >= 2 && s[0] == '(' && s[len(s)-1] == ')' {
@@ -259,64 +257,15 @@ func translateDefault(colType, def string) string {
 }
 
 func writeTableSchema(db *sql.DB, out io.Writer, table schema.Table, incIndexes bool) error {
-	columnDefs := ""
-	for i, column := range table.Columns {
-		if i > 0 {
-			columnDefs += ",\n"
-		}
-		columnDefs += column.Name + " "
-		if column.IsAutoInc {
-			columnDefs += "serial"
-		} else if column.Type == "varchar" || column.Type == "nvarchar" || column.Type == "text" || column.Type == "ntext" || (column.Type == "char" && column.MaxLength > 1) {
-			switch textType {
-			case "text":
-				columnDefs += "text"
-			case "citext":
-				columnDefs += "citext"
-			default:
-				if column.MaxLength == -1 {
-					columnDefs += "text"
-				} else {
-					maxLen := column.MaxLength
-					if column.Type == "nvarchar" {
-						maxLen /= 2
-					}
-					columnDefs += fmt.Sprintf("varchar(%d)", maxLen)
-				}
-			}
-		} else if column.Type == "datetime" ||
-			column.Type == "smalldatetime" ||
-			column.Type == "date" ||
-			column.Type == "time" ||
-			column.Type == "datetime2" {
-			columnDefs += "timestamp"
-		} else if column.Type == "image" {
-			columnDefs += "bytea"
-		} else if column.Type == "bit" {
-			columnDefs += "boolean"
-		} else if column.Type == "uniqueidentifier" {
-			columnDefs += "uuid"
-		} else if column.Type == "money" {
-			columnDefs += "numeric(19, 4)"
-		} else {
-			columnDefs += column.Type
-		}
-		if column.Default != "" && !column.IsAutoInc {
-			columnDefs += " default " + column.Default
-		}
-		if !column.IsNullable {
-			columnDefs += " not"
-		}
-		columnDefs += " null"
-	}
+	drop := pgsql.DropTableStatement(table)
+	create := pgsql.CreateTableStatement(table, textType)
 
 	fmt.Fprintf(
 		out,
-		"/* -- %s -- */\ndrop table if exists %s;\n\ncreate table %s\n(\n%s\n);\n\n",
+		"/* -- %s -- */\n%s\n\n%s\n\n",
 		table.Name,
-		table.Name,
-		table.Name,
-		columnDefs,
+		drop,
+		create,
 	)
 
 	if incIndexes {
@@ -398,7 +347,7 @@ func writeTableData(db *sql.DB, out io.Writer, table string) error {
 			case time.Time:
 				valStrs[i] = fmt.Sprintf("'%s'", v.UTC().Format("2006-01-02 15:04:05.999999Z07:00"))
 			default:
-				// For some drivers, DECIMAL/NUMERIC may arrive as custom types
+
 				t := strings.ToLower(colTypes[i].DatabaseTypeName())
 				switch t {
 				case "decimal", "numeric", "money", "smallmoney":
@@ -550,7 +499,7 @@ func writeIndexes(db *sql.DB, out io.Writer, table *schema.Table) error {
 				} else {
 					fmt.Fprintf(out, "create index %s on %s (%s);\n", lastIndex, lastTable, strings.Join(columns, ", "))
 				}
-				// keep blank line between tables for readability
+
 				if lastTable != tableName {
 					fmt.Fprintf(out, "\n")
 				}
@@ -721,41 +670,28 @@ func writeCompiledObject(db *sql.DB, out io.Writer, objType string) error {
 	return nil
 }
 
-// normalizeLineEndings converts CRLF/CR to LF for portable SQL output
 func normalizeLineEndings(s string) string {
 	s = strings.ReplaceAll(s, "\r\n", "\n")
 	s = strings.ReplaceAll(s, "\r", "\n")
 	return s
 }
 
-// normalizeViewText applies MSSQL->Postgres textual tweaks for views.
-// - Strip single quotes around aliases: AS 'Alias' => AS Alias
-// - Strip double quotes around aliases: AS "Alias" => AS Alias
-// - Remove Unicode literal prefix: N'...' => '...'
-// - Convert string concatenation: 'a' + col => 'a' || col; col + 'b' => col || 'b'
-// - Remove trailing batch terminator line GO
 func normalizeViewText(s string) string {
-	// Remove Unicode string literal prefix N'...'
+
 	s = reNLiteral.ReplaceAllString(s, `'${1}'`)
 
-	// Handle patterns like: AS 'COMMERCE_TYPE' (case-insensitive AS, optional spaces)
 	s = reAsSingleAlias.ReplaceAllString(s, "AS $1")
 
-	// Handle patterns like: AS "COMMERCE_TYPE"
 	s = reAsDoubleAlias.ReplaceAllString(s, "AS $1")
 
-	// Convert string concatenation when at least one side is a string literal (supports N'...')
 	s = reConcatLeft.ReplaceAllString(s, "$1 || ")
 	s = reConcatRight.ReplaceAllString(s, " || $1")
 
-	// Remove trailing GO on final line, if present
 	s = reTrailingGo.ReplaceAllString(s, "\n")
 
 	return s
 }
 
-// uuidFromBytes converts MSSQL uniqueidentifier raw bytes (mixed-endian)
-// into a canonical UUID string (xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx).
 func uuidFromBytes(b []byte) string {
 	if len(b) != 16 {
 		return ""
