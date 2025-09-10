@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 
@@ -272,4 +273,56 @@ func CreateTableStatement(table schema.Table, textType string) string {
 	)
 
 	return sql
+}
+
+func ConvertValue(val any, dt schema.DataType) any {
+	switch v := val.(type) {
+	case nil:
+		return nil
+	case []byte:
+		switch dt.Kind {
+		case schema.KindNumeric, schema.KindMoney:
+			return strings.TrimSpace(string(v))
+		case schema.KindUUID:
+			if len(v) == 16 {
+				return uuidFromBytes(v)
+			} else if len(v) == 0 {
+				return nil
+			}
+			return strings.ToLower(strings.TrimSpace(string(v)))
+		case schema.KindBool:
+			if len(v) > 0 && v[0] != 0 {
+				return true
+			}
+			return false
+		default:
+			return v
+		}
+	case string:
+		switch dt.Kind {
+		case schema.KindNumeric, schema.KindMoney:
+			return strings.TrimSpace(v)
+		case schema.KindUUID:
+			return strings.ToLower(strings.TrimSpace(v))
+		default:
+			return v
+		}
+	case time.Time:
+		return v.UTC()
+	default:
+		return v
+	}
+}
+
+func uuidFromBytes(b []byte) string {
+	if len(b) != 16 {
+		return ""
+	}
+	return fmt.Sprintf("%02x%02x%02x%02x-%02x%02x-%02x%02x-%02x%02x-%02x%02x%02x%02x%02x%02x",
+		b[3], b[2], b[1], b[0],
+		b[5], b[4],
+		b[7], b[6],
+		b[8], b[9],
+		b[10], b[11], b[12], b[13], b[14], b[15],
+	)
 }

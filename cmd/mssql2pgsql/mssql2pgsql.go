@@ -705,45 +705,6 @@ func uuidFromBytes(b []byte) string {
 	)
 }
 
-func convertValue(val any, dbType string) any {
-	switch v := val.(type) {
-	case nil:
-		return nil
-	case []byte:
-		switch dbType {
-		case "decimal", "numeric", "money", "smallmoney":
-			return strings.TrimSpace(string(v))
-		case "uniqueidentifier":
-			if len(v) == 16 {
-				return uuidFromBytes(v)
-			} else if len(v) == 0 {
-				return nil
-			}
-			return strings.ToLower(strings.TrimSpace(string(v)))
-		case "bit":
-			if len(v) > 0 && v[0] != 0 {
-				return true
-			}
-			return false
-		default:
-			return v
-		}
-	case string:
-		switch dbType {
-		case "decimal", "numeric", "money", "smallmoney":
-			return strings.TrimSpace(v)
-		case "uniqueidentifier":
-			return strings.ToLower(strings.TrimSpace(v))
-		default:
-			return v
-		}
-	case time.Time:
-		return v.UTC()
-	default:
-		return v
-	}
-}
-
 func quotedIdentifier(name string) string {
 	return "\"" + strings.ReplaceAll(name, "\"", "\"\"") + "\""
 }
@@ -808,7 +769,23 @@ func copyTableDataGeneric(src *sql.DB, dst *sql.DB, table string) error {
 
 		for i := range values {
 			dbType := strings.ToLower(colTypes[i].DatabaseTypeName())
-			args[i] = convertValue(values[i], dbType)
+			// Construct a minimal schema.DataType from the raw db type for generic path
+			var dt schema.DataType
+			switch dbType {
+			case "decimal", "numeric":
+				dt.Kind = schema.KindNumeric
+			case "money", "smallmoney":
+				dt.Kind = schema.KindMoney
+			case "uniqueidentifier":
+				dt.Kind = schema.KindUUID
+			case "bit":
+				dt.Kind = schema.KindBool
+			default:
+				dt.Kind = schema.KindUnknown
+				dt.Raw = dbType
+			}
+
+			args[i] = pgsql.ConvertValue(values[i], dt)
 		}
 
 		if _, err := stmt.Exec(args...); err != nil {
@@ -884,7 +861,7 @@ func copyTableData(ctx context.Context, src *sql.DB, dst *pgx.Conn, table schema
 		copyRow := make([]any, len(cols))
 
 		for i, data := range row {
-			copyRow[i] = convertValue(data, cols[i].Type)
+			copyRow[i] = pgsql.ConvertValue(data, cols[i].DataType)
 		}
 
 		copyRows = append(copyRows, copyRow)
