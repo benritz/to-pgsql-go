@@ -13,6 +13,8 @@ import (
 
 	_ "github.com/denisenkom/go-mssqldb"
 	"github.com/jackc/pgx/v5"
+
+	"benritz/topgsql/internal/types"
 )
 
 var (
@@ -37,24 +39,6 @@ var (
 	reConcatRight   = regexp.MustCompile(`(?i)\s*\+\s*(N?'(?:[^']|'')*')`)
 	reTrailingGo    = regexp.MustCompile(`(?mi)(?:\r?\n)[ \t]*GO[ \t]*\s*$`)
 )
-
-type Column struct {
-	ColumnID   int
-	Name       string
-	MaxLength  int
-	Precision  int
-	Scale      int
-	IsNullable bool
-	IsComputed bool
-	IsAutoInc  bool
-	Type       string
-	Default    string
-}
-
-type Table struct {
-	Name    string
-	Columns []Column
-}
 
 func main() {
 	flag.StringVar(&sourceUrl, "source", "", "Source database connection URL")
@@ -210,7 +194,7 @@ func isConnectionUrl(url string) bool {
 	return !strings.HasPrefix(url, "file://") && strings.Contains(url, "://")
 }
 
-func readTables(db *sql.DB) ([]Table, error) {
+func readTables(db *sql.DB) ([]types.Table, error) {
 	rows, err := db.Query(
 		`select 
 t.name as table_name, 
@@ -236,9 +220,9 @@ t.name asc, t.object_id asc, c.column_id asc`,
 	}
 	defer rows.Close()
 
-	tables := []Table{}
+	tables := []types.Table{}
 	var lastTable string
-	var columns []Column
+	var columns []types.Column
 	for rows.Next() {
 		var tableName, columnName, colType string
 		var columnID, maxLength, precision, scale int
@@ -251,10 +235,10 @@ t.name asc, t.object_id asc, c.column_id asc`,
 
 		if columnID == 1 {
 			if lastTable != "" {
-				tables = append(tables, Table{Name: lastTable, Columns: columns})
+				tables = append(tables, types.Table{Name: lastTable, Columns: columns})
 			}
 			lastTable = tableName
-			columns = []Column{}
+			columns = []types.Column{}
 		}
 
 		defaultVal := ""
@@ -266,7 +250,7 @@ t.name asc, t.object_id asc, c.column_id asc`,
 			}
 		}
 
-		columns = append(columns, Column{
+		columns = append(columns, types.Column{
 			ColumnID:   columnID,
 			Name:       columnName,
 			MaxLength:  maxLength,
@@ -280,7 +264,7 @@ t.name asc, t.object_id asc, c.column_id asc`,
 		})
 	}
 	if lastTable != "" {
-		tables = append(tables, Table{Name: lastTable, Columns: columns})
+		tables = append(tables, types.Table{Name: lastTable, Columns: columns})
 	}
 	return tables, nil
 }
@@ -348,7 +332,7 @@ func translateDefault(colType, def string) string {
 	return v
 }
 
-func writeTableSchema(db *sql.DB, out io.Writer, table Table, incIndexes bool) error {
+func writeTableSchema(db *sql.DB, out io.Writer, table types.Table, incIndexes bool) error {
 	columnDefs := ""
 	for i, column := range table.Columns {
 		if i > 0 {
@@ -523,7 +507,7 @@ func writeTableData(db *sql.DB, out io.Writer, table string) error {
 	return nil
 }
 
-func writeAllTableSchemas(db *sql.DB, out io.Writer, tables []Table, incConstraints bool) error {
+func writeAllTableSchemas(db *sql.DB, out io.Writer, tables []types.Table, incConstraints bool) error {
 	fmt.Fprintf(out, "/* --------------------- TABLES --------------------- */\n\n")
 
 	if textType == "citext" {
@@ -539,7 +523,7 @@ func writeAllTableSchemas(db *sql.DB, out io.Writer, tables []Table, incConstrai
 	return nil
 }
 
-func writeAllTableData(db *sql.DB, out io.Writer, tables []Table) error {
+func writeAllTableData(db *sql.DB, out io.Writer, tables []types.Table) error {
 	fmt.Fprintf(out, "set session_replication_role = 'replica';")
 
 	for _, t := range tables {
@@ -595,7 +579,7 @@ $$;`)
 	fmt.Fprintf(out, "select relname, setval(oid, seq_field_max_value(oid)) from pg_class where relkind = 'S';\n\n")
 }
 
-func writeIndexes(db *sql.DB, out io.Writer, table *Table) error {
+func writeIndexes(db *sql.DB, out io.Writer, table *types.Table) error {
 	sql := "select t.name as table_name, c.name as column_name, i.name as index_name, ic.index_column_id, i.is_primary_key, i.is_unique_constraint, i.is_unique from sys.indexes i, sys.index_columns ic, sys.tables t, sys.columns c where i.object_id = t.object_id and ic.object_id = t.object_id and ic.index_id = i.index_id and t.object_id = c.object_id and ic.column_id = c.column_id"
 	args := []any{}
 
@@ -672,7 +656,7 @@ func writeIndexes(db *sql.DB, out io.Writer, table *Table) error {
 	return nil
 }
 
-func writeForeignKeys(db *sql.DB, out io.Writer, table *Table) error {
+func writeForeignKeys(db *sql.DB, out io.Writer, table *types.Table) error {
 	if table == nil {
 		fmt.Fprintf(out, "/* --------------------- FOREIGN KEYS --------------------- */\n\n")
 	}
@@ -979,7 +963,7 @@ func copyTableDataGeneric(src *sql.DB, dst *sql.DB, table string) error {
 	return tx.Commit()
 }
 
-func copyAllTableData(ctx context.Context, src *sql.DB, dst *pgx.Conn, tables []Table) error {
+func copyAllTableData(ctx context.Context, src *sql.DB, dst *pgx.Conn, tables []types.Table) error {
 	for _, table := range tables {
 		if err := copyTableData(ctx, src, dst, table); err != nil {
 			return err
@@ -989,8 +973,8 @@ func copyAllTableData(ctx context.Context, src *sql.DB, dst *pgx.Conn, tables []
 	return nil
 }
 
-func updateableColumns(table Table) []Column {
-	cols := []Column{}
+func updateableColumns(table types.Table) []types.Column {
+	cols := []types.Column{}
 	for _, col := range table.Columns {
 		if !col.IsComputed {
 			cols = append(cols, col)
@@ -999,7 +983,7 @@ func updateableColumns(table Table) []Column {
 	return cols
 }
 
-func selectClause(cols []Column) string {
+func selectClause(cols []types.Column) string {
 	names := make([]string, len(cols))
 	for i, c := range cols {
 		names[i] = c.Name
@@ -1007,7 +991,7 @@ func selectClause(cols []Column) string {
 	return strings.Join(names, ", ")
 }
 
-func copyTableData(ctx context.Context, src *sql.DB, dst *pgx.Conn, table Table) error {
+func copyTableData(ctx context.Context, src *sql.DB, dst *pgx.Conn, table types.Table) error {
 	cols := updateableColumns(table)
 
 	query := fmt.Sprintf("select %s from %s", selectClause(cols), table.Name)
