@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"database/sql"
 	"flag"
 	"fmt"
@@ -11,9 +12,12 @@ import (
 	"time"
 
 	_ "github.com/denisenkom/go-mssqldb"
+	"github.com/jackc/pgx/v5"
 )
 
 var (
+	sourceUrl     string
+	targetUrl     string
 	incData       bool
 	incTables     bool
 	incFunctions  bool
@@ -52,6 +56,8 @@ type Table struct {
 }
 
 func main() {
+	flag.StringVar(&sourceUrl, "source", "", "Source database connection URL")
+	flag.StringVar(&targetUrl, "target", "", "Target file or database connection URL")
 	flag.StringVar(&textType, "textType", "citext", "How to convert the text column types. Either text, citext or varchar (default).")
 	flag.BoolVar(&incData, "incData", false, "Include table data")
 	flag.BoolVar(&incTables, "incTables", false, "Include tables schema")
@@ -62,96 +68,145 @@ func main() {
 	flag.IntVar(&dataBatchSize, "dataBatchSize", 100, "Batch size for data inserts")
 	flag.Parse()
 
-	args := flag.Args()
-
-	if len(args) == 0 {
-		fmt.Fprintln(os.Stderr, "Missing the connection URL.")
+	if sourceUrl == "" {
+		fmt.Fprintln(os.Stderr, "Missing the source database connection URL")
 		os.Exit(1)
 	}
 
-	url := args[0]
+	ctx := context.Background()
 
-	var out *os.File
-	if len(args) == 1 {
-		out = os.Stdout
-	} else {
-		outputFile := args[1]
-		f, err := os.Create(outputFile)
-		if err != nil {
-			fmt.Fprintln(os.Stderr, "Failed to create output file:", err)
-			os.Exit(1)
-		}
-		out = f
-		// out.WriteString("\ufeff") // UTF-8 BOM for Windows
-		defer out.Close()
-	}
-
-	db, err := sql.Open("sqlserver", url)
+	db, err := sql.Open("sqlserver", sourceUrl)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "Failed to connect to source:", err)
 		os.Exit(1)
 	}
+
 	defer db.Close()
 
-	tables, err := readTables(db)
-	if err != nil {
-		fmt.Fprintln(os.Stderr, err)
-		os.Exit(1)
-	}
-
-	if incTables {
-		if err := writeAllTableSchemas(db, out, tables, !incData); err != nil {
-			fmt.Fprintln(os.Stderr, err)
-			os.Exit(1)
-		}
-	}
-
-	if incData {
-		if err := writeAllTableData(db, out, tables); err != nil {
-			fmt.Fprintln(os.Stderr, err)
+	if isConnectionUrl(targetUrl) {
+		// database target
+		if !strings.HasPrefix(targetUrl, "postgres://") {
+			fmt.Fprintln(os.Stderr, "Target database must be a PostgreSQL connection URL (postgres://username:password@localhost:5432/database_name)")
 			os.Exit(1)
 		}
 
-		if err := writeIndexes(db, out, nil); err != nil {
-			fmt.Fprintln(os.Stderr, err)
+		conn, err := pgx.Connect(ctx, targetUrl)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Unable to connect to database: %v\n", err)
 			os.Exit(1)
 		}
-	}
+		defer conn.Close(ctx)
 
-	if incTables {
-		if err := writeForeignKeys(db, out, nil); err != nil {
-			fmt.Fprintln(os.Stderr, err)
-			os.Exit(1)
-		}
-	}
+		if incTables || incData {
+			tables, err := readTables(db)
+			if err != nil {
+				fmt.Fprintln(os.Stderr, err)
+				os.Exit(1)
+			}
 
-	if incFunctions {
-		if err := writeFunctions(db, out); err != nil {
-			fmt.Fprintln(os.Stderr, err)
-			os.Exit(1)
-		}
-	}
+			if incData {
+				setReplicationOn(ctx, conn)
+				err := copyAllTableData(ctx, db, conn, tables)
+				setReplicationOff(ctx, conn)
 
-	if incProcedures {
-		if err := writeProcedures(db, out); err != nil {
-			fmt.Fprintln(os.Stderr, err)
-			os.Exit(1)
+				if err != nil {
+					fmt.Fprintln(os.Stderr, "Failed to copy table data: ", err)
+					os.Exit(1)
+				}
+			}
 		}
-	}
+	} else {
+		// file target
+		var out *os.File
+		if targetUrl == "" {
+			out = os.Stdout
+		} else {
+			f, err := os.Create(targetUrl)
+			if err != nil {
+				fmt.Fprintln(os.Stderr, "Failed to create target file:", err)
+				os.Exit(1)
+			}
+			out = f
+			// out.WriteString("\ufeff") // UTF-8 BOM for Windows
+			defer out.Close()
+		}
 
-	if incViews {
-		if err := writeViews(db, out); err != nil {
-			fmt.Fprintln(os.Stderr, err)
-			os.Exit(1)
-		}
-	}
+		if incTables || incData {
+			tables, err := readTables(db)
+			if err != nil {
+				fmt.Fprintln(os.Stderr, err)
+				os.Exit(1)
+			}
 
-	if incTriggers {
-		if err := writeTriggers(db, out); err != nil {
-			fmt.Fprintln(os.Stderr, err)
-			os.Exit(1)
+			if incTables {
+				if err := writeAllTableSchemas(db, out, tables, !incData); err != nil {
+					fmt.Fprintln(os.Stderr, err)
+					os.Exit(1)
+				}
+			}
+
+			if incData {
+				if err := writeAllTableData(db, out, tables); err != nil {
+					fmt.Fprintln(os.Stderr, err)
+					os.Exit(1)
+				}
+			}
+
+			if incTables {
+				if err := writeIndexes(db, out, nil); err != nil {
+					fmt.Fprintln(os.Stderr, err)
+					os.Exit(1)
+				}
+
+				if err := writeForeignKeys(db, out, nil); err != nil {
+					fmt.Fprintln(os.Stderr, err)
+					os.Exit(1)
+				}
+			}
+		}
+
+		if incFunctions {
+			if err := writeFunctions(db, out); err != nil {
+				fmt.Fprintln(os.Stderr, err)
+				os.Exit(1)
+			}
+		}
+
+		if incProcedures {
+			if err := writeProcedures(db, out); err != nil {
+				fmt.Fprintln(os.Stderr, err)
+				os.Exit(1)
+			}
+		}
+
+		if incViews {
+			if err := writeViews(db, out); err != nil {
+				fmt.Fprintln(os.Stderr, err)
+				os.Exit(1)
+			}
+		}
+
+		if incTriggers {
+			if err := writeTriggers(db, out); err != nil {
+				fmt.Fprintln(os.Stderr, err)
+				os.Exit(1)
+			}
 		}
 	}
+}
+
+func setReplicationOn(ctx context.Context, conn *pgx.Conn) error {
+	_, err := conn.Exec(ctx, "set session_replication_role = 'replica';")
+	return err
+}
+
+func setReplicationOff(ctx context.Context, conn *pgx.Conn) error {
+	_, err := conn.Exec(ctx, "set session_replication_role = 'origin';")
+	return err
+}
+
+func isConnectionUrl(url string) bool {
+	return !strings.HasPrefix(url, "file://") && strings.Contains(url, "://")
 }
 
 func readTables(db *sql.DB) ([]Table, error) {
@@ -688,7 +743,6 @@ func writeTriggers(db *sql.DB, out io.Writer) error {
 
 // Helper for compiled objects (functions, procedures, views, triggers)
 func writeCompiledObject(db *sql.DB, out io.Writer, objType string) error {
-
 	rows, err := db.Query("select c.text, c.colid from sysobjects o, syscomments c where c.id = o.id and o.type = @p1 order by o.name, c.colid asc", objType)
 	if err != nil {
 		return err
@@ -834,7 +888,7 @@ func quotedIdentifier(name string) string {
 	return "\"" + strings.ReplaceAll(name, "\"", "\"\"") + "\""
 }
 
-func copyTableData(src, dst *sql.DB, table string) error {
+func copyTableDataGeneric(src *sql.DB, dst *sql.DB, table string) error {
 	query := fmt.Sprintf("select * from %s", table)
 	rows, err := src.Query(query)
 	if err != nil {
@@ -909,4 +963,86 @@ func copyTableData(src, dst *sql.DB, table string) error {
 	}
 
 	return tx.Commit()
+}
+
+func copyAllTableData(ctx context.Context, src *sql.DB, dst *pgx.Conn, tables []Table) error {
+	for _, table := range tables {
+		if err := copyTableData(ctx, src, dst, table.Name); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+func copyTableData(ctx context.Context, src *sql.DB, dst *pgx.Conn, table string) error {
+	query := fmt.Sprintf("select * from %s", table)
+	rows, err := src.Query(query)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+
+	cols, err := rows.Columns()
+	if err != nil {
+		return err
+	}
+
+	colTypes, err := rows.ColumnTypes()
+	if err != nil {
+		return err
+	}
+
+	row := make([]any, len(cols))
+	rowPtrs := make([]any, len(cols))
+	for i := range row {
+		rowPtrs[i] = &row[i]
+	}
+
+	var copyRows [][]any
+
+	copyCols := make([]string, len(cols))
+	for i, c := range cols {
+		copyCols[i] = strings.ToLower(c)
+	}
+
+	for rows.Next() {
+		if err := rows.Scan(rowPtrs...); err != nil {
+			return err
+		}
+
+		copyRow := make([]any, len(cols))
+
+		for i, data := range row {
+			dbType := strings.ToLower(colTypes[i].DatabaseTypeName())
+			copyRow[i] = convertValue(data, dbType)
+		}
+
+		copyRows = append(copyRows, copyRow)
+
+		fmt.Printf("Added row: %v\n", copyRow)
+	}
+
+	if err := rows.Err(); err != nil {
+		return err
+	}
+
+	table = strings.ToLower(table)
+
+	if _, err := dst.Exec(ctx, "truncate table "+table+" cascade"); err != nil {
+		return err
+	}
+
+	if len(copyRows) > 0 {
+		fmt.Printf("Copying %d rows into %s...\n", len(copyRows), table)
+
+		count, err := dst.CopyFrom(ctx, pgx.Identifier{table}, copyCols, pgx.CopyFromRows(copyRows))
+		if err != nil {
+			return err
+		}
+
+		fmt.Printf("Copied %d rows into %s\n", count, table)
+	}
+
+	return nil
 }
