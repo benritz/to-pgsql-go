@@ -45,6 +45,7 @@ type Column struct {
 	Precision  int
 	Scale      int
 	IsNullable bool
+	IsComputed bool
 	IsAutoInc  bool
 	Type       string
 	Default    string
@@ -211,12 +212,24 @@ func isConnectionUrl(url string) bool {
 
 func readTables(db *sql.DB) ([]Table, error) {
 	rows, err := db.Query(
-		"select t.name as table_name, c.column_id, c.name as column_name, c.max_length, c.precision, c.scale, c.is_nullable, c.is_identity, ty.name as type, d.definition " +
-			"from sys.tables t " +
-			"join sys.columns c on t.object_id = c.object_id " +
-			"join sys.types ty on c.user_type_id = ty.user_type_id " +
-			"left join sys.default_constraints d on d.parent_object_id = c.object_id and d.parent_column_id = c.column_id " +
-			"order by t.name asc, t.object_id asc, c.column_id asc",
+		`select 
+t.name as table_name, 
+c.column_id, 
+c.name as column_name, 
+c.max_length, 
+c.precision, 
+c.scale, 
+c.is_nullable, 
+c.is_identity, 
+c.is_computed,
+ty.name as type, 
+d.definition
+from 
+sys.tables t join sys.columns c on t.object_id = c.object_id 
+join sys.types ty on c.user_type_id = ty.user_type_id
+left join sys.default_constraints d on d.parent_object_id = c.object_id and d.parent_column_id = c.column_id
+order by 
+t.name asc, t.object_id asc, c.column_id asc`,
 	)
 	if err != nil {
 		return nil, err
@@ -229,10 +242,10 @@ func readTables(db *sql.DB) ([]Table, error) {
 	for rows.Next() {
 		var tableName, columnName, colType string
 		var columnID, maxLength, precision, scale int
-		var isNullable, isAutoInc bool
+		var isNullable, isComputed, isAutoInc bool
 		var def sql.NullString
 
-		if err := rows.Scan(&tableName, &columnID, &columnName, &maxLength, &precision, &scale, &isNullable, &isAutoInc, &colType, &def); err != nil {
+		if err := rows.Scan(&tableName, &columnID, &columnName, &maxLength, &precision, &scale, &isNullable, &isAutoInc, &isComputed, &colType, &def); err != nil {
 			return nil, err
 		}
 
@@ -260,6 +273,7 @@ func readTables(db *sql.DB) ([]Table, error) {
 			Precision:  precision,
 			Scale:      scale,
 			IsNullable: isNullable,
+			IsComputed: isComputed,
 			IsAutoInc:  isAutoInc,
 			Type:       colType,
 			Default:    defaultVal,
@@ -967,7 +981,7 @@ func copyTableDataGeneric(src *sql.DB, dst *sql.DB, table string) error {
 
 func copyAllTableData(ctx context.Context, src *sql.DB, dst *pgx.Conn, tables []Table) error {
 	for _, table := range tables {
-		if err := copyTableData(ctx, src, dst, table.Name); err != nil {
+		if err := copyTableData(ctx, src, dst, table); err != nil {
 			return err
 		}
 	}
@@ -975,23 +989,33 @@ func copyAllTableData(ctx context.Context, src *sql.DB, dst *pgx.Conn, tables []
 	return nil
 }
 
-func copyTableData(ctx context.Context, src *sql.DB, dst *pgx.Conn, table string) error {
-	query := fmt.Sprintf("select * from %s", table)
+func updateableColumns(table Table) []Column {
+	cols := []Column{}
+	for _, col := range table.Columns {
+		if !col.IsComputed {
+			cols = append(cols, col)
+		}
+	}
+	return cols
+}
+
+func selectClause(cols []Column) string {
+	names := make([]string, len(cols))
+	for i, c := range cols {
+		names[i] = c.Name
+	}
+	return strings.Join(names, ", ")
+}
+
+func copyTableData(ctx context.Context, src *sql.DB, dst *pgx.Conn, table Table) error {
+	cols := updateableColumns(table)
+
+	query := fmt.Sprintf("select %s from %s", selectClause(cols), table.Name)
 	rows, err := src.Query(query)
 	if err != nil {
 		return err
 	}
 	defer rows.Close()
-
-	cols, err := rows.Columns()
-	if err != nil {
-		return err
-	}
-
-	colTypes, err := rows.ColumnTypes()
-	if err != nil {
-		return err
-	}
 
 	row := make([]any, len(cols))
 	rowPtrs := make([]any, len(cols))
@@ -1003,7 +1027,7 @@ func copyTableData(ctx context.Context, src *sql.DB, dst *pgx.Conn, table string
 
 	copyCols := make([]string, len(cols))
 	for i, c := range cols {
-		copyCols[i] = strings.ToLower(c)
+		copyCols[i] = strings.ToLower(c.Name)
 	}
 
 	for rows.Next() {
@@ -1014,34 +1038,31 @@ func copyTableData(ctx context.Context, src *sql.DB, dst *pgx.Conn, table string
 		copyRow := make([]any, len(cols))
 
 		for i, data := range row {
-			dbType := strings.ToLower(colTypes[i].DatabaseTypeName())
-			copyRow[i] = convertValue(data, dbType)
+			copyRow[i] = convertValue(data, cols[i].Type)
 		}
 
 		copyRows = append(copyRows, copyRow)
-
-		fmt.Printf("Added row: %v\n", copyRow)
 	}
 
 	if err := rows.Err(); err != nil {
 		return err
 	}
 
-	table = strings.ToLower(table)
+	tableName := strings.ToLower(table.Name)
 
-	if _, err := dst.Exec(ctx, "truncate table "+table+" cascade"); err != nil {
+	if _, err := dst.Exec(ctx, "truncate table "+tableName+" cascade"); err != nil {
 		return err
 	}
 
 	if len(copyRows) > 0 {
-		fmt.Printf("Copying %d rows into %s...\n", len(copyRows), table)
+		fmt.Printf("Copying %d rows into %s...\n", len(copyRows), table.Name)
 
-		count, err := dst.CopyFrom(ctx, pgx.Identifier{table}, copyCols, pgx.CopyFromRows(copyRows))
+		count, err := dst.CopyFrom(ctx, pgx.Identifier{tableName}, copyCols, pgx.CopyFromRows(copyRows))
 		if err != nil {
 			return err
 		}
 
-		fmt.Printf("Copied %d rows into %s\n", count, table)
+		fmt.Printf("Copied %d rows into %s\n", count, table.Name)
 	}
 
 	return nil
