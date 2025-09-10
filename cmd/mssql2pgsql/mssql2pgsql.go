@@ -14,14 +14,14 @@ import (
 )
 
 var (
-	forceCaseInsensitive bool
-	incSchema            bool
-	incData              bool
-	incFunctions         bool
-	incTriggers          bool
-	incProcedures        bool
-	incViews             bool
-	dataBatchSize        int
+	incData       bool
+	incTables     bool
+	incFunctions  bool
+	incTriggers   bool
+	incProcedures bool
+	incViews      bool
+	textType      string
+	dataBatchSize int
 )
 
 // Precompiled regexes for view normalization
@@ -52,9 +52,9 @@ type Table struct {
 }
 
 func main() {
-	flag.BoolVar(&forceCaseInsensitive, "forceCaseInsensitive", true, "Use citext for case-insensitive text columns")
-	flag.BoolVar(&incSchema, "incSchema", false, "Include table schema")
+	flag.StringVar(&textType, "textType", "citext", "How to convert the text column types. Either text, citext or varchar (default).")
 	flag.BoolVar(&incData, "incData", false, "Include table data")
+	flag.BoolVar(&incTables, "incTables", false, "Include tables schema")
 	flag.BoolVar(&incFunctions, "incFunctions", false, "Include functions")
 	flag.BoolVar(&incProcedures, "incProcedures", false, "Include procedures")
 	flag.BoolVar(&incTriggers, "incTriggers", false, "Include triggers")
@@ -99,7 +99,7 @@ func main() {
 		os.Exit(1)
 	}
 
-	if incSchema {
+	if incTables {
 		if err := writeAllTableSchemas(db, out, tables, !incData); err != nil {
 			fmt.Fprintln(os.Stderr, err)
 			os.Exit(1)
@@ -116,10 +116,9 @@ func main() {
 			fmt.Fprintln(os.Stderr, err)
 			os.Exit(1)
 		}
-
 	}
 
-	if incSchema {
+	if incTables {
 		if err := writeForeignKeys(db, out, nil); err != nil {
 			fmt.Fprintln(os.Stderr, err)
 			os.Exit(1)
@@ -290,9 +289,12 @@ func writeTableSchema(db *sql.DB, out io.Writer, table Table, incIndexes bool) e
 		if column.IsAutoInc {
 			columnDefs += "serial"
 		} else if column.Type == "varchar" || column.Type == "nvarchar" || column.Type == "text" || column.Type == "ntext" || (column.Type == "char" && column.MaxLength > 1) {
-			if forceCaseInsensitive {
+			switch textType {
+			case "text":
+				columnDefs += "text"
+			case "citext":
 				columnDefs += "citext"
-			} else {
+			default:
 				if column.MaxLength == -1 {
 					columnDefs += "text"
 				} else {
@@ -303,7 +305,11 @@ func writeTableSchema(db *sql.DB, out io.Writer, table Table, incIndexes bool) e
 					columnDefs += fmt.Sprintf("varchar(%d)", maxLen)
 				}
 			}
-		} else if column.Type == "datetime" || column.Type == "smalldatetime" || column.Type == "date" || column.Type == "time" || column.Type == "datetime2" {
+		} else if column.Type == "datetime" ||
+			column.Type == "smalldatetime" ||
+			column.Type == "date" ||
+			column.Type == "time" ||
+			column.Type == "datetime2" {
 			columnDefs += "timestamp"
 		} else if column.Type == "image" {
 			columnDefs += "bytea"
@@ -311,6 +317,8 @@ func writeTableSchema(db *sql.DB, out io.Writer, table Table, incIndexes bool) e
 			columnDefs += "boolean"
 		} else if column.Type == "uniqueidentifier" {
 			columnDefs += "uuid"
+		} else if column.Type == "money" {
+			columnDefs += "numeric(19, 4)"
 		} else {
 			columnDefs += column.Type
 		}
@@ -357,17 +365,22 @@ func writeTableData(db *sql.DB, out io.Writer, table string) error {
 	if err != nil {
 		return err
 	}
+
 	n := 0
 	for rows.Next() {
 		values := make([]any, len(cols))
 		valuePtrs := make([]any, len(cols))
+
 		for i := range values {
 			valuePtrs[i] = &values[i]
 		}
+
 		if err := rows.Scan(valuePtrs...); err != nil {
 			return err
 		}
+
 		valStrs := make([]string, len(cols))
+
 		for i, val := range values {
 			switch v := val.(type) {
 			case nil:
@@ -418,6 +431,7 @@ func writeTableData(db *sql.DB, out io.Writer, table string) error {
 				}
 			}
 		}
+
 		if dataBatchSize == 1 {
 			fmt.Fprintf(out, "insert into %s values (%s);\n", table, strings.Join(valStrs, ", "))
 		} else {
@@ -432,16 +446,18 @@ func writeTableData(db *sql.DB, out io.Writer, table string) error {
 		}
 		n++
 	}
+
 	if n > 0 {
 		fmt.Fprintf(out, ";\n\n")
 	}
+
 	return nil
 }
 
 func writeAllTableSchemas(db *sql.DB, out io.Writer, tables []Table, incConstraints bool) error {
 	fmt.Fprintf(out, "/* --------------------- TABLES --------------------- */\n\n")
 
-	if forceCaseInsensitive {
+	if textType == "citext" {
 		fmt.Fprintf(out, "create extension if not exists citext;\n\n")
 	}
 
@@ -455,6 +471,8 @@ func writeAllTableSchemas(db *sql.DB, out io.Writer, tables []Table, incConstrai
 }
 
 func writeAllTableData(db *sql.DB, out io.Writer, tables []Table) error {
+	fmt.Fprintf(out, "set session_replication_role = 'replica';")
+
 	for _, t := range tables {
 		if err := writeTableData(db, out, t.Name); err != nil {
 			return err
@@ -462,6 +480,8 @@ func writeAllTableData(db *sql.DB, out io.Writer, tables []Table) error {
 	}
 
 	writeSeqReset(out)
+
+	fmt.Fprintf(out, "set session_replication_role = 'origin';")
 
 	return nil
 }
@@ -769,4 +789,124 @@ func uuidFromBytes(b []byte) string {
 		b[8], b[9],
 		b[10], b[11], b[12], b[13], b[14], b[15],
 	)
+}
+
+func convertValue(val any, dbType string) any {
+	switch v := val.(type) {
+	case nil:
+		return nil
+	case []byte:
+		switch dbType {
+		case "decimal", "numeric", "money", "smallmoney":
+			return strings.TrimSpace(string(v))
+		case "uniqueidentifier":
+			if len(v) == 16 {
+				return uuidFromBytes(v)
+			} else if len(v) == 0 {
+				return nil
+			}
+			return strings.ToLower(strings.TrimSpace(string(v)))
+		case "bit":
+			if len(v) > 0 && v[0] != 0 {
+				return true
+			}
+			return false
+		default:
+			return v
+		}
+	case string:
+		switch dbType {
+		case "decimal", "numeric", "money", "smallmoney":
+			return strings.TrimSpace(v)
+		case "uniqueidentifier":
+			return strings.ToLower(strings.TrimSpace(v))
+		default:
+			return v
+		}
+	case time.Time:
+		return v.UTC()
+	default:
+		return v
+	}
+}
+
+func quotedIdentifier(name string) string {
+	return "\"" + strings.ReplaceAll(name, "\"", "\"\"") + "\""
+}
+
+func copyTableData(src, dst *sql.DB, table string) error {
+	query := fmt.Sprintf("select * from %s", table)
+	rows, err := src.Query(query)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+
+	cols, err := rows.Columns()
+	if err != nil {
+		return err
+	}
+
+	colTypes, err := rows.ColumnTypes()
+	if err != nil {
+		return err
+	}
+
+	quotedCols := make([]string, len(cols))
+	placeholders := make([]string, len(cols))
+	for i, c := range cols {
+		quotedCols[i] = quotedIdentifier(c)
+		placeholders[i] = fmt.Sprintf("$%d", i+1)
+	}
+
+	sql := fmt.Sprintf(
+		"insert into %s (%s) values (%s)",
+		quotedIdentifier(table),
+		strings.Join(quotedCols, ", "),
+		strings.Join(placeholders, ", "),
+	)
+
+	tx, err := dst.Begin()
+	if err != nil {
+		return err
+	}
+
+	stmt, err := tx.Prepare(sql)
+	if err != nil {
+		_ = tx.Rollback()
+		return err
+	}
+	defer stmt.Close()
+
+	values := make([]any, len(cols))
+	valuePtrs := make([]any, len(cols))
+	for i := range values {
+		valuePtrs[i] = &values[i]
+	}
+
+	args := make([]any, len(cols))
+
+	for rows.Next() {
+		if err := rows.Scan(valuePtrs...); err != nil {
+			_ = tx.Rollback()
+			return err
+		}
+
+		for i := range values {
+			dbType := strings.ToLower(colTypes[i].DatabaseTypeName())
+			args[i] = convertValue(values[i], dbType)
+		}
+
+		if _, err := stmt.Exec(args...); err != nil {
+			_ = tx.Rollback()
+			return err
+		}
+	}
+
+	if err := rows.Err(); err != nil {
+		_ = tx.Rollback()
+		return err
+	}
+
+	return tx.Commit()
 }
