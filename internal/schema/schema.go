@@ -1,4 +1,4 @@
-package types
+package schema
 
 type Column struct {
 	ColumnID   int

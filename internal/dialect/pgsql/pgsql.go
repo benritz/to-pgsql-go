@@ -6,10 +6,10 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
-	"benritz/topgsql/internal/types"
+	"benritz/topgsql/internal/schema"
 )
 
-func GetTables(ctx context.Context, conn *pgx.Conn) ([]types.Table, error) {
+func GetTables(ctx context.Context, conn *pgx.Conn) ([]schema.Table, error) {
 	rows, err := conn.Query(ctx, `
 SELECT
     c.relname AS table_name,
@@ -36,9 +36,9 @@ ORDER BY c.relname ASC, c.oid ASC, a.attnum ASC`)
 	}
 	defer rows.Close()
 
-	tables := []types.Table{}
+	tables := []schema.Table{}
 	var lastTable string
-	var columns []types.Column
+	var columns []schema.Column
 
 	for rows.Next() {
 		var (
@@ -66,10 +66,10 @@ ORDER BY c.relname ASC, c.oid ASC, a.attnum ASC`)
 
 		if columnID == 1 {
 			if lastTable != "" {
-				tables = append(tables, types.Table{Name: lastTable, Columns: columns})
+				tables = append(tables, schema.Table{Name: lastTable, Columns: columns})
 			}
 			lastTable = tableName
-			columns = []types.Column{}
+			columns = []schema.Column{}
 		}
 
 		maxLength := 0
@@ -98,7 +98,7 @@ ORDER BY c.relname ASC, c.oid ASC, a.attnum ASC`)
 			isAutoInc = true
 		}
 
-		columns = append(columns, types.Column{
+		columns = append(columns, schema.Column{
 			ColumnID:   columnID,
 			Name:       columnName,
 			MaxLength:  maxLength,
@@ -113,7 +113,7 @@ ORDER BY c.relname ASC, c.oid ASC, a.attnum ASC`)
 	}
 
 	if lastTable != "" {
-		tables = append(tables, types.Table{Name: lastTable, Columns: columns})
+		tables = append(tables, schema.Table{Name: lastTable, Columns: columns})
 	}
 
 	return tables, nil

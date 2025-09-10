@@ -14,8 +14,8 @@ import (
 	_ "github.com/denisenkom/go-mssqldb"
 	"github.com/jackc/pgx/v5"
 
-	"benritz/topgsql/internal/mssql"
-	"benritz/topgsql/internal/types"
+	"benritz/topgsql/internal/dialect/mssql"
+	"benritz/topgsql/internal/schema"
 )
 
 var (
@@ -44,7 +44,7 @@ var (
 func main() {
 	flag.StringVar(&sourceUrl, "source", "", "Source database connection URL")
 	flag.StringVar(&targetUrl, "target", "", "Target file or database connection URL")
-	flag.StringVar(&textType, "textType", "citext", "How to convert the text column types. Either text, citext or varchar (default).")
+	flag.StringVar(&textType, "textType", "citext", "How to convert the text column schema. Either text, citext or varchar (default).")
 	flag.BoolVar(&incData, "incData", false, "Include table data")
 	flag.BoolVar(&incTables, "incTables", false, "Include tables schema")
 	flag.BoolVar(&incFunctions, "incFunctions", false, "Include functions")
@@ -258,7 +258,7 @@ func translateDefault(colType, def string) string {
 	return v
 }
 
-func writeTableSchema(db *sql.DB, out io.Writer, table types.Table, incIndexes bool) error {
+func writeTableSchema(db *sql.DB, out io.Writer, table schema.Table, incIndexes bool) error {
 	columnDefs := ""
 	for i, column := range table.Columns {
 		if i > 0 {
@@ -433,7 +433,7 @@ func writeTableData(db *sql.DB, out io.Writer, table string) error {
 	return nil
 }
 
-func writeAllTableSchemas(db *sql.DB, out io.Writer, tables []types.Table, incConstraints bool) error {
+func writeAllTableSchemas(db *sql.DB, out io.Writer, tables []schema.Table, incConstraints bool) error {
 	fmt.Fprintf(out, "/* --------------------- TABLES --------------------- */\n\n")
 
 	if textType == "citext" {
@@ -449,7 +449,7 @@ func writeAllTableSchemas(db *sql.DB, out io.Writer, tables []types.Table, incCo
 	return nil
 }
 
-func writeAllTableData(db *sql.DB, out io.Writer, tables []types.Table) error {
+func writeAllTableData(db *sql.DB, out io.Writer, tables []schema.Table) error {
 	fmt.Fprintf(out, "set session_replication_role = 'replica';")
 
 	for _, t := range tables {
@@ -505,7 +505,7 @@ $$;`)
 	fmt.Fprintf(out, "select relname, setval(oid, seq_field_max_value(oid)) from pg_class where relkind = 'S';\n\n")
 }
 
-func writeIndexes(db *sql.DB, out io.Writer, table *types.Table) error {
+func writeIndexes(db *sql.DB, out io.Writer, table *schema.Table) error {
 	sql := "select t.name as table_name, c.name as column_name, i.name as index_name, ic.index_column_id, i.is_primary_key, i.is_unique_constraint, i.is_unique from sys.indexes i, sys.index_columns ic, sys.tables t, sys.columns c where i.object_id = t.object_id and ic.object_id = t.object_id and ic.index_id = i.index_id and t.object_id = c.object_id and ic.column_id = c.column_id"
 	args := []any{}
 
@@ -582,7 +582,7 @@ func writeIndexes(db *sql.DB, out io.Writer, table *types.Table) error {
 	return nil
 }
 
-func writeForeignKeys(db *sql.DB, out io.Writer, table *types.Table) error {
+func writeForeignKeys(db *sql.DB, out io.Writer, table *schema.Table) error {
 	if table == nil {
 		fmt.Fprintf(out, "/* --------------------- FOREIGN KEYS --------------------- */\n\n")
 	}
@@ -889,7 +889,7 @@ func copyTableDataGeneric(src *sql.DB, dst *sql.DB, table string) error {
 	return tx.Commit()
 }
 
-func copyAllTableData(ctx context.Context, src *sql.DB, dst *pgx.Conn, tables []types.Table) error {
+func copyAllTableData(ctx context.Context, src *sql.DB, dst *pgx.Conn, tables []schema.Table) error {
 	for _, table := range tables {
 		if err := copyTableData(ctx, src, dst, table); err != nil {
 			return err
@@ -899,8 +899,8 @@ func copyAllTableData(ctx context.Context, src *sql.DB, dst *pgx.Conn, tables []
 	return nil
 }
 
-func updateableColumns(table types.Table) []types.Column {
-	cols := []types.Column{}
+func updateableColumns(table schema.Table) []schema.Column {
+	cols := []schema.Column{}
 	for _, col := range table.Columns {
 		if !col.IsComputed {
 			cols = append(cols, col)
@@ -909,7 +909,7 @@ func updateableColumns(table types.Table) []types.Column {
 	return cols
 }
 
-func selectClause(cols []types.Column) string {
+func selectClause(cols []schema.Column) string {
 	names := make([]string, len(cols))
 	for i, c := range cols {
 		names[i] = c.Name
@@ -917,7 +917,7 @@ func selectClause(cols []types.Column) string {
 	return strings.Join(names, ", ")
 }
 
-func copyTableData(ctx context.Context, src *sql.DB, dst *pgx.Conn, table types.Table) error {
+func copyTableData(ctx context.Context, src *sql.DB, dst *pgx.Conn, table schema.Table) error {
 	cols := updateableColumns(table)
 
 	query := fmt.Sprintf("select %s from %s", selectClause(cols), table.Name)

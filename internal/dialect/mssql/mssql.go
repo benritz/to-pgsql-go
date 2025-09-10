@@ -4,10 +4,10 @@ import (
 	"database/sql"
 	"strings"
 
-	"benritz/topgsql/internal/types"
+	"benritz/topgsql/internal/schema"
 )
 
-func GetTables(db *sql.DB) ([]types.Table, error) {
+func GetTables(db *sql.DB) ([]schema.Table, error) {
 	rows, err := db.Query(
 		`select 
 t.name as table_name, 
@@ -33,9 +33,9 @@ t.name asc, t.object_id asc, c.column_id asc`,
 	}
 	defer rows.Close()
 
-	tables := []types.Table{}
+	tables := []schema.Table{}
 	var lastTable string
-	var columns []types.Column
+	var columns []schema.Column
 
 	for rows.Next() {
 		var tableName, columnName, colType, defaultValue string
@@ -61,10 +61,10 @@ t.name asc, t.object_id asc, c.column_id asc`,
 
 		if columnID == 1 {
 			if lastTable != "" {
-				tables = append(tables, types.Table{Name: lastTable, Columns: columns})
+				tables = append(tables, schema.Table{Name: lastTable, Columns: columns})
 			}
 			lastTable = tableName
-			columns = []types.Column{}
+			columns = []schema.Column{}
 		}
 
 		defaultValue = ""
@@ -77,7 +77,7 @@ t.name asc, t.object_id asc, c.column_id asc`,
 			}
 		}
 
-		columns = append(columns, types.Column{
+		columns = append(columns, schema.Column{
 			ColumnID:   columnID,
 			Name:       columnName,
 			MaxLength:  maxLength,
@@ -92,7 +92,7 @@ t.name asc, t.object_id asc, c.column_id asc`,
 	}
 
 	if lastTable != "" {
-		tables = append(tables, types.Table{Name: lastTable, Columns: columns})
+		tables = append(tables, schema.Table{Name: lastTable, Columns: columns})
 	}
 
 	return tables, nil
