@@ -112,6 +112,12 @@ func main() {
 
 		tables := values(tablesMap)
 
+		indexes, err := source.GetIndexes(ctx)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
+
 		if incTables {
 			if err := target.CreateTables(tables); err != nil {
 				fmt.Fprintln(os.Stderr, err)
@@ -126,17 +132,17 @@ func main() {
 		// 	}
 		// }
 		//
-		// if incTables {
-		// 	if err := writeIndexes(db, out, nil); err != nil {
-		// 		fmt.Fprintln(os.Stderr, err)
-		// 		os.Exit(1)
-		// 	}
-		//
-		// 	if err := writeForeignKeys(db, out, nil); err != nil {
-		// 		fmt.Fprintln(os.Stderr, err)
-		// 		os.Exit(1)
-		// 	}
-		// }
+		if incTables {
+			if err := target.CreateIndexes(indexes); err != nil {
+				fmt.Fprintln(os.Stderr, err)
+				os.Exit(1)
+			}
+			//
+			// 	if err := writeForeignKeys(db, out, nil); err != nil {
+			// 		fmt.Fprintln(os.Stderr, err)
+			// 		os.Exit(1)
+			// 	}
+		}
 	}
 
 	// if incFunctions {
@@ -167,66 +173,6 @@ func main() {
 	// 	}
 	// }
 	// }
-}
-
-func stripEnclosingParens(s string) string {
-	s = strings.TrimSpace(s)
-	for len(s) >= 2 && s[0] == '(' && s[len(s)-1] == ')' {
-		depth := 0
-		endAt := -1
-		for i := 0; i < len(s); i++ {
-			switch s[i] {
-			case '(':
-				depth++
-			case ')':
-				depth--
-			}
-			if depth == 0 {
-				endAt = i
-				break
-			}
-		}
-		if endAt != len(s)-1 {
-			break
-		}
-		s = strings.TrimSpace(s[1 : len(s)-1])
-	}
-	return s
-}
-
-func translateDefault(colType, def string) string {
-	if def == "" {
-		return ""
-	}
-	v := stripEnclosingParens(def)
-
-	// Normalize NVARCHAR literal prefix: N'...'
-	if strings.HasPrefix(v, "N'") && len(v) >= 3 {
-		v = "'" + v[2:]
-	}
-
-	// MSSQL datetime-now equivalents -> Postgres
-	if strings.EqualFold(v, "getutcdate()") {
-		v = "now() at time zone 'utc'"
-	} else if strings.EqualFold(v, "getdate()") || strings.EqualFold(v, "sysdatetime()") || strings.EqualFold(v, "current_timestamp") {
-		v = "now()"
-	}
-
-	// bit -> boolean mapping
-	if strings.EqualFold(colType, "bit") {
-		unquoted := v
-		if len(unquoted) >= 2 && unquoted[0] == '\'' && unquoted[len(unquoted)-1] == '\'' {
-			unquoted = unquoted[1 : len(unquoted)-1]
-		}
-		switch unquoted {
-		case "1", "-1":
-			v = "true"
-		case "0":
-			v = "false"
-		}
-	}
-
-	return v
 }
 
 func writeTableData(db *sql.DB, out io.Writer, table string) error {

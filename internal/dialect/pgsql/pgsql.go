@@ -97,6 +97,14 @@ func (t *PgsqlTarget) CreateTables(tables []schema.Table) error {
 	return nil
 }
 
+func (t *PgsqlTarget) CreateIndexes(indexes []schema.Index) error {
+	if t.out != nil {
+		t.writeIndexes(indexes)
+	}
+
+	return nil
+}
+
 func (t *PgsqlTarget) writeTablesSchema(tables []schema.Table) error {
 	fmt.Fprintf(t.out, "/* --------------------- TABLES --------------------- */\n\n")
 
@@ -122,6 +130,29 @@ func (t *PgsqlTarget) writeTableSchema(table schema.Table) error {
 		"/* -- %s -- */\n%s\n\n%s\n\n",
 		table.Name,
 		drop,
+		create,
+	)
+
+	return nil
+}
+
+func (t *PgsqlTarget) writeIndexes(indexes []schema.Index) error {
+	fmt.Fprintf(t.out, "/* --------------------- INDEXES --------------------- */\n\n")
+
+	for _, index := range indexes {
+		if err := t.writeIndex(index); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+func (t *PgsqlTarget) writeIndex(index schema.Index) error {
+	create := CreateIndexStatement(index)
+
+	fmt.Fprint(
+		t.out,
 		create,
 	)
 
@@ -415,6 +446,22 @@ func toDefault(def string) string {
 	}
 
 	return def
+}
+
+func CreateIndexStatement(index schema.Index) string {
+	cols := strings.Join(index.Columns, ", ")
+	switch index.IndexType {
+	case schema.IndexTypePrimaryKey:
+		return fmt.Sprintf("alter table %s add constraint %s primary key (%s);\n", index.Table, index.Name, cols)
+	case schema.IndexTypeUniqueConstraint:
+		return fmt.Sprintf("alter table %s add constraint %s unique (%s);\n", index.Table, index.Name, cols)
+	case schema.IndexTypeUnique:
+		return fmt.Sprintf("create unique index %s on %s (%s);\n", index.Name, index.Table, cols)
+	case schema.IndexTypeNonUnique:
+		fallthrough
+	default:
+		return fmt.Sprintf("create index %s on %s (%s);\n", index.Name, index.Table, cols)
+	}
 }
 
 func ConvertValue(val any, dt schema.DataType) any {
