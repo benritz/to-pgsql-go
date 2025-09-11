@@ -62,13 +62,12 @@ func main() {
 
 	ctx := context.Background()
 
-	db, err := sql.Open("sqlserver", sourceUrl)
+	source, err := mssql.NewMssqlTarget(sourceUrl)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "Failed to connect to source:", err)
 		os.Exit(1)
 	}
-
-	defer db.Close()
+	defer source.Close()
 
 	if isConnectionUrl(targetUrl) {
 		// database target
@@ -85,7 +84,7 @@ func main() {
 		defer conn.Close(ctx)
 
 		if incTables || incData {
-			tables, err := mssql.GetTables(db)
+			tables, err := source.GetTables(ctx)
 			if err != nil {
 				fmt.Fprintln(os.Stderr, err)
 				os.Exit(1)
@@ -119,7 +118,7 @@ func main() {
 		}
 
 		if incTables || incData {
-			tables, err := mssql.GetTables(db)
+			tables, err := source.GetTables(ctx)
 			if err != nil {
 				fmt.Fprintln(os.Stderr, err)
 				os.Exit(1)

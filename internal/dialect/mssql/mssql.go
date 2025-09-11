@@ -1,12 +1,53 @@
 package mssql
 
 import (
+	"context"
 	"database/sql"
 	"fmt"
 	"strings"
 
 	"benritz/topgsql/internal/schema"
 )
+
+type MssqlSource struct {
+	db         *sql.DB
+	tableCache map[string]schema.Table
+}
+
+func NewMssqlTarget(connectionUrl string) (*MssqlSource, error) {
+	db, err := sql.Open("sqlserver", connectionUrl)
+	if err != nil {
+		return nil, err
+	}
+
+	source := &MssqlSource{
+		db: db,
+	}
+
+	return source, nil
+}
+
+func (s *MssqlSource) Close() {
+	s.db.Close()
+}
+
+func (s *MssqlSource) GetTables(ctx context.Context) (map[string]schema.Table, error) {
+	if s.tableCache != nil {
+		return s.tableCache, nil
+	}
+
+	tables, err := getTables(ctx, s.db)
+	if err != nil {
+		return nil, err
+	}
+
+	s.tableCache = make(map[string]schema.Table, len(tables))
+	for _, table := range tables {
+		s.tableCache[table.Name] = table
+	}
+
+	return s.tableCache, nil
+}
 
 func toDataType(baseType string, maxLength, precision, scale int, isAutoInc bool) schema.DataType {
 	raw := strings.ToLower(baseType)
@@ -132,8 +173,9 @@ func fromDatatype(dt schema.DataType) string {
 	}
 }
 
-func GetTables(db *sql.DB) ([]schema.Table, error) {
-	rows, err := db.Query(
+func getTables(ctx context.Context, db *sql.DB) ([]schema.Table, error) {
+	rows, err := db.QueryContext(
+		ctx,
 		`select 
  t.name as table_name, 
  c.column_id, 
@@ -217,6 +259,10 @@ func GetTables(db *sql.DB) ([]schema.Table, error) {
 			Default:    defaultValue,
 			DataType:   dt,
 		})
+	}
+
+	if rows.Err() != nil {
+		return nil, err
 	}
 
 	if lastTable != "" {
