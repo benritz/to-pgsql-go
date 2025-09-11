@@ -132,7 +132,7 @@ func (t *PgsqlTarget) CopyTables(ctx context.Context, table []schema.Table, read
 
 		for _, table := range table {
 			if err := t.copyTableData(ctx, table, reader); err != nil {
-				return err
+				return fmt.Errorf("Copy data failed for %s: %v", table.Name, err)
 			}
 		}
 	}
@@ -230,7 +230,13 @@ func (t *PgsqlTarget) copyTableData(ctx context.Context, table schema.Table, rea
 
 	targetTable, ok := tablesMap[targetTableName]
 	if !ok {
-		return fmt.Errorf("Table %s not found in target database", targetTableName)
+		sql := CreateTableStatement(table, t.textType)
+		_, err := t.conn.Exec(ctx, sql)
+		if err != nil {
+			return fmt.Errorf("Table %s not found in target database. Failed to create table: %v", targetTableName, err)
+		}
+
+		targetTable = table
 	}
 
 	cols := schema.UpdateableColumns(targetTable)
