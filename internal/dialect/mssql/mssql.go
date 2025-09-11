@@ -10,11 +10,13 @@ import (
 )
 
 type MssqlSource struct {
-	db         *sql.DB
-	tableCache map[string]schema.Table
+	db              *sql.DB
+	tableCache      map[string]schema.Table
+	indexCache      []schema.Index
+	foreignKeyCache []schema.ForeignKey
 }
 
-func NewMssqlTarget(connectionUrl string) (*MssqlSource, error) {
+func NewMssqlSource(connectionUrl string) (*MssqlSource, error) {
 	db, err := sql.Open("sqlserver", connectionUrl)
 	if err != nil {
 		return nil, err
@@ -47,6 +49,36 @@ func (s *MssqlSource) GetTables(ctx context.Context) (map[string]schema.Table, e
 	}
 
 	return s.tableCache, nil
+}
+
+func (s *MssqlSource) GetIndexes(ctx context.Context) ([]schema.Index, error) {
+	if s.indexCache != nil {
+		return s.indexCache, nil
+	}
+
+	indexes, err := readIndexes(ctx, s.db, nil)
+	if err != nil {
+		return nil, err
+	}
+
+	s.indexCache = indexes
+
+	return s.indexCache, nil
+}
+
+func (s *MssqlSource) GetForeignKeys(ctx context.Context) ([]schema.ForeignKey, error) {
+	if s.foreignKeyCache != nil {
+		return s.foreignKeyCache, nil
+	}
+
+	keys, err := readForeignKeys(ctx, s.db, nil)
+	if err != nil {
+		return nil, err
+	}
+
+	s.foreignKeyCache = keys
+
+	return s.foreignKeyCache, nil
 }
 
 func toDataType(baseType string, maxLength, precision, scale int, isAutoInc bool) schema.DataType {
@@ -187,7 +219,7 @@ func getTables(ctx context.Context, db *sql.DB) ([]schema.Table, error) {
  c.is_identity, 
  c.is_computed,
  ty.name as type, 
- d.definition
+ d.definition as default_value
  from 
  sys.tables t join sys.columns c on t.object_id = c.object_id 
  join sys.types ty on c.user_type_id = ty.user_type_id
@@ -234,17 +266,17 @@ func getTables(ctx context.Context, db *sql.DB) ([]schema.Table, error) {
 			columns = []schema.Column{}
 		}
 
+		dt := toDataType(colType, maxLength, precision, scale, isAutoInc)
+
 		defaultValue = ""
 		if defaultValueOrNull.Valid {
-			defaultValue = defaultValueOrNull.String
+			defaultValue = translateDefault(dt, defaultValueOrNull.String)
 
 			if !isAutoInc &&
 				strings.HasPrefix(strings.ToLower(strings.TrimSpace(defaultValue)), "next value for ") {
 				isAutoInc = true
 			}
 		}
-
-		dt := toDataType(colType, maxLength, precision, scale, isAutoInc)
 
 		columns = append(columns, schema.Column{
 			ColumnID:   columnID,
@@ -270,4 +302,185 @@ func getTables(ctx context.Context, db *sql.DB) ([]schema.Table, error) {
 	}
 
 	return tables, nil
+}
+
+func stripEnclosing(s, first, last string) string {
+	s = strings.TrimSpace(s)
+	if len(s) >= len(first)+len(last) &&
+		strings.HasPrefix(s, first) &&
+		strings.HasSuffix(s, last) {
+		return stripEnclosing(s[len(first):len(s)-len(last)], first, last)
+	}
+	return s
+}
+
+func translateDefault(dt schema.DataType, defaultValue string) string {
+	if defaultValue == "" {
+		return ""
+	}
+
+	v := stripEnclosing(defaultValue, "(", ")")
+
+	if strings.EqualFold(v, "getutcdate()") ||
+		strings.EqualFold(v, "sysutcdatetime()") {
+		v = "{{Now.UTC}}"
+	} else if strings.EqualFold(v, "getdate()") ||
+		strings.EqualFold(v, "sysdatetime()") ||
+		strings.EqualFold(v, "current_timestamp") {
+		v = "{{Now.Local}}"
+	}
+
+	if dt.Kind == schema.KindBool {
+		v = stripEnclosing(v, "'", "'")
+		switch v {
+		case "1", "-1":
+			v = "true"
+		case "0":
+			v = "false"
+		}
+	}
+
+	return v
+}
+
+func readIndexes(ctx context.Context, db *sql.DB, table *schema.Table) ([]schema.Index, error) {
+	q := "select t.name as table_name, c.name as column_name, i.name as index_name, ic.index_column_id, i.is_primary_key, i.is_unique_constraint, i.is_unique from sys.indexes i, sys.index_columns ic, sys.tables t, sys.columns c where i.object_id = t.object_id and ic.object_id = t.object_id and ic.index_id = i.index_id and t.object_id = c.object_id and ic.column_id = c.column_id"
+	args := []any{}
+
+	if table != nil {
+		q += " and t.name = @p1 "
+		args = append(args, table.Name)
+	}
+
+	q += " order by t.name asc, t.object_id asc, i.index_id asc, ic.index_column_id asc"
+
+	rows, err := db.QueryContext(ctx, q, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var (
+		result []schema.Index
+		cur    schema.Index
+	)
+
+	for rows.Next() {
+		var (
+			tableName, columnName, indexName string
+			indexColumnID                    int
+			pk, uc, uq                       bool
+		)
+
+		if err := rows.Scan(&tableName, &columnName, &indexName, &indexColumnID, &pk, &uc, &uq); err != nil {
+			return nil, err
+		}
+
+		if indexColumnID == 1 {
+			if cur.Name != "" {
+				result = append(result, cur)
+			}
+
+			var it schema.IndexType
+			if pk {
+				it = schema.IndexTypePrimaryKey
+			} else if uc {
+				it = schema.IndexTypeUniqueConstraint
+			} else if uq {
+				it = schema.IndexTypeUnique
+			} else {
+				it = schema.IndexTypeNonUnique
+			}
+
+			cur = schema.Index{
+				Table:     tableName,
+				Name:      indexName,
+				Columns:   []string{},
+				IndexType: it,
+			}
+		}
+
+		cur.Columns = append(cur.Columns, columnName)
+	}
+
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+
+	if cur.Name != "" {
+		result = append(result, cur)
+	}
+
+	return result, nil
+}
+
+func readForeignKeys(ctx context.Context, db *sql.DB, table *schema.Table) ([]schema.ForeignKey, error) {
+	q := "select fk.name as key_name, t.name as parent_table, c.name as parent_column, rt.name as referenced_table, rc.name as referenced_column, fkc.constraint_column_id as constraint_column_id from sys.tables t, sys.tables rt, sys.columns c, sys.columns rc, sys.foreign_keys fk, sys.foreign_key_columns fkc where fk.object_id = fkc.constraint_object_id and t.object_id = fk.parent_object_id and fkc.parent_column_id = c.column_id and c.object_id = t.object_id and rt.object_id = fk.referenced_object_id and fkc.referenced_column_id = rc.column_id and rc.object_id = rt.object_id"
+	args := []any{}
+
+	if table != nil {
+		q += " and t.name = @p1"
+		args = append(args, table.Name)
+	}
+
+	q += " order by fk.object_id asc, fkc.constraint_column_id asc"
+
+	rows, err := db.QueryContext(ctx, q, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var (
+		result                    []schema.ForeignKey
+		curKey                    string
+		curParent, curRef         string
+		curParentCols, curRefCols []string
+	)
+
+	for rows.Next() {
+		var (
+			keyName, pTable, pColumn, rTable, rColumn string
+			constraintColumnID                        int
+		)
+		if err := rows.Scan(&keyName, &pTable, &pColumn, &rTable, &rColumn, &constraintColumnID); err != nil {
+			return nil, err
+		}
+
+		if constraintColumnID == 1 {
+			if curKey != "" {
+				result = append(result, schema.ForeignKey{
+					Name:              curKey,
+					Table:             curParent,
+					Columns:           curParentCols,
+					ReferencedTable:   curRef,
+					ReferencedColumns: curRefCols,
+				})
+			}
+			curKey = keyName
+			curParent = pTable
+			curRef = rTable
+			curParentCols = []string{}
+			curRefCols = []string{}
+		}
+
+		curParentCols = append(curParentCols, pColumn)
+		curRefCols = append(curRefCols, rColumn)
+	}
+
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+
+	if curKey != "" {
+		result = append(result, schema.ForeignKey{
+			Name:              curKey,
+			Table:             curParent,
+			Columns:           curParentCols,
+			ReferencedTable:   curRef,
+			ReferencedColumns: curRefCols,
+		})
+	}
+
+	return result, nil
 }

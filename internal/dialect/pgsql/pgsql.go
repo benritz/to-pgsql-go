@@ -3,6 +3,7 @@ package pgsql
 import (
 	"context"
 	"fmt"
+	"os"
 	"strings"
 	"time"
 
@@ -13,15 +14,61 @@ import (
 
 type PgsqlTarget struct {
 	conn       *pgx.Conn
+	out        *os.File
+	textType   string // "", "text" or "citext"
 	tableCache map[string]schema.Table
 }
 
-func NewPgsqlTarget(conn *pgx.Conn) *PgsqlTarget {
-	target := &PgsqlTarget{
-		conn: conn,
+func NewPgsqlTarget(ctx context.Context, targetUrl, textType string) (*PgsqlTarget, error) {
+	if textType != "" && textType != "text" && textType != "citext" {
+		return nil, fmt.Errorf("Invalid text type: %s (allowed: <empty>, text, citext)", textType)
 	}
 
-	return target
+	target := &PgsqlTarget{
+		textType: textType,
+	}
+
+	if isConnectionUrl(targetUrl) {
+		// database target
+		if !strings.HasPrefix(targetUrl, "postgres://") {
+			return nil, fmt.Errorf("Target database must be a PostgreSQL connection URL (postgres://username:password@localhost:5432/database_name)")
+		}
+
+		conn, err := pgx.Connect(ctx, targetUrl)
+		if err != nil {
+			return nil, err
+		}
+
+		target.conn = conn
+	} else {
+		// file target
+		var out *os.File
+
+		if targetUrl == "" {
+			out = os.Stdout
+		} else {
+			f, err := os.Create(targetUrl)
+			if err != nil {
+				return nil, err
+			}
+			out = f
+			// out.WriteString("\ufeff") // UTF-8 BOM for Windows
+		}
+
+		target.out = out
+	}
+
+	return target, nil
+}
+
+func (t *PgsqlTarget) Close(ctx context.Context) {
+	if t.conn != nil {
+		t.conn.Close(ctx)
+	}
+
+	if t.out != nil {
+		t.out.Close()
+	}
 }
 
 func (t *PgsqlTarget) GetTables(ctx context.Context) (map[string]schema.Table, error) {
@@ -40,6 +87,59 @@ func (t *PgsqlTarget) GetTables(ctx context.Context) (map[string]schema.Table, e
 	}
 
 	return t.tableCache, nil
+}
+
+func (t *PgsqlTarget) CreateTables(tables []schema.Table) error {
+	if t.out != nil {
+		t.writeTablesSchema(tables)
+	}
+
+	return nil
+}
+
+func (t *PgsqlTarget) writeTablesSchema(tables []schema.Table) error {
+	fmt.Fprintf(t.out, "/* --------------------- TABLES --------------------- */\n\n")
+
+	if t.textType == "citext" {
+		fmt.Fprintf(t.out, "create extension if not exists citext;\n\n")
+	}
+
+	for _, table := range tables {
+		if err := t.writeTableSchema(table); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+func (t *PgsqlTarget) writeTableSchema(table schema.Table) error {
+	drop := DropTableStatement(table)
+	create := CreateTableStatement(table, t.textType)
+
+	fmt.Fprintf(
+		t.out,
+		"/* -- %s -- */\n%s\n\n%s\n\n",
+		table.Name,
+		drop,
+		create,
+	)
+
+	return nil
+}
+
+func isConnectionUrl(url string) bool {
+	return !strings.HasPrefix(url, "file://") && strings.Contains(url, "://")
+}
+
+func setReplicationOn(ctx context.Context, conn *pgx.Conn) error {
+	_, err := conn.Exec(ctx, "set session_replication_role = 'replica';")
+	return err
+}
+
+func setReplicationOff(ctx context.Context, conn *pgx.Conn) error {
+	_, err := conn.Exec(ctx, "set session_replication_role = 'origin';")
+	return err
 }
 
 func getTables(ctx context.Context, conn *pgx.Conn) ([]schema.Table, error) {
@@ -208,7 +308,7 @@ func toDataType(baseType string, maxLength, precision, scale int, isAutoInc bool
 	return dt
 }
 
-func fromDatatype(dt schema.DataType, textPref string) string {
+func fromDatatype(dt schema.DataType, textType string) string {
 	switch dt.Kind {
 	case schema.KindSerialInt32:
 		return "serial"
@@ -217,7 +317,7 @@ func fromDatatype(dt schema.DataType, textPref string) string {
 	case schema.KindInt16:
 		return "smallint"
 	case schema.KindInt32:
-		return "integer"
+		return "int"
 	case schema.KindInt64:
 		return "bigint"
 	case schema.KindBool:
@@ -236,10 +336,10 @@ func fromDatatype(dt schema.DataType, textPref string) string {
 	case schema.KindMoney:
 		return "numeric(19, 4)"
 	case schema.KindVarChar:
-		if textPref == "text" {
+		if textType == "text" {
 			return "text"
 		}
-		if textPref == "citext" {
+		if textType == "citext" {
 			return "citext"
 		}
 		if dt.Length <= 0 {
@@ -247,7 +347,7 @@ func fromDatatype(dt schema.DataType, textPref string) string {
 		}
 		return fmt.Sprintf("varchar(%d)", dt.Length)
 	case schema.KindText:
-		if textPref == "citext" {
+		if textType == "citext" {
 			return "citext"
 		}
 		return "text"
@@ -288,7 +388,7 @@ func CreateTableStatement(table schema.Table, textType string) string {
 		columnDefs += fromDatatype(column.DataType, textType)
 
 		if column.Default != "" && !column.IsAutoInc {
-			columnDefs += " default " + column.Default
+			columnDefs += " default " + toDefault(column.Default)
 		}
 		if !column.IsNullable {
 			columnDefs += " not"
@@ -303,6 +403,18 @@ func CreateTableStatement(table schema.Table, textType string) string {
 	)
 
 	return sql
+}
+
+func toDefault(def string) string {
+	if def == "{{Now.Local}}" {
+		return "now()"
+	}
+
+	if def == "{{Now.UTC}}" {
+		return "now() at time zone 'utc'"
+	}
+
+	return def
 }
 
 func ConvertValue(val any, dt schema.DataType) any {

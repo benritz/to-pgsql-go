@@ -50,3 +50,27 @@ type Table struct {
 	Name    string
 	Columns []Column
 }
+
+type IndexType string
+
+const (
+	IndexTypePrimaryKey       IndexType = "primary_key"
+	IndexTypeUniqueConstraint IndexType = "unique_constraint"
+	IndexTypeUnique           IndexType = "unique"
+	IndexTypeNonUnique        IndexType = "non_unique"
+)
+
+type Index struct {
+	Table     string
+	Name      string
+	Columns   []string
+	IndexType IndexType
+}
+
+type ForeignKey struct {
+	Name              string
+	Table             string
+	Columns           []string
+	ReferencedTable   string
+	ReferencedColumns []string
+}

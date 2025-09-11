@@ -42,6 +42,14 @@ var (
 	reTrailingGo    = regexp.MustCompile(`(?mi)(?:\r?\n)[ \t]*GO[ \t]*\s*$`)
 )
 
+func values[K comparable, V any](m map[K]V) []V {
+	out := make([]V, 0, len(m))
+	for _, v := range m {
+		out = append(out, v)
+	}
+	return out
+}
+
 func main() {
 	flag.StringVar(&sourceUrl, "source", "", "Source database connection URL")
 	flag.StringVar(&targetUrl, "target", "", "Target file or database connection URL")
@@ -62,137 +70,103 @@ func main() {
 
 	ctx := context.Background()
 
-	source, err := mssql.NewMssqlTarget(sourceUrl)
+	source, err := mssql.NewMssqlSource(sourceUrl)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "Failed to connect to source:", err)
 		os.Exit(1)
 	}
 	defer source.Close()
 
-	if isConnectionUrl(targetUrl) {
-		// database target
-		if !strings.HasPrefix(targetUrl, "postgres://") {
-			fmt.Fprintln(os.Stderr, "Target database must be a PostgreSQL connection URL (postgres://username:password@localhost:5432/database_name)")
-			os.Exit(1)
-		}
-
-		conn, err := pgx.Connect(ctx, targetUrl)
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "Unable to connect to database: %v\n", err)
-			os.Exit(1)
-		}
-		defer conn.Close(ctx)
-
-		if incTables || incData {
-			tables, err := source.GetTables(ctx)
-			if err != nil {
-				fmt.Fprintln(os.Stderr, err)
-				os.Exit(1)
-			}
-
-			if incData {
-				setReplicationOn(ctx, conn)
-				err := copyAllTableData(ctx, db, conn, tables)
-				setReplicationOff(ctx, conn)
-
-				if err != nil {
-					fmt.Fprintln(os.Stderr, "Failed to copy table data: ", err)
-					os.Exit(1)
-				}
-			}
-		}
-	} else {
-		// file target
-		var out *os.File
-		if targetUrl == "" {
-			out = os.Stdout
-		} else {
-			f, err := os.Create(targetUrl)
-			if err != nil {
-				fmt.Fprintln(os.Stderr, "Failed to create target file:", err)
-				os.Exit(1)
-			}
-			out = f
-			// out.WriteString("\ufeff") // UTF-8 BOM for Windows
-			defer out.Close()
-		}
-
-		if incTables || incData {
-			tables, err := source.GetTables(ctx)
-			if err != nil {
-				fmt.Fprintln(os.Stderr, err)
-				os.Exit(1)
-			}
-
-			if incTables {
-				if err := writeAllTableSchemas(db, out, tables, !incData); err != nil {
-					fmt.Fprintln(os.Stderr, err)
-					os.Exit(1)
-				}
-			}
-
-			if incData {
-				if err := writeAllTableData(db, out, tables); err != nil {
-					fmt.Fprintln(os.Stderr, err)
-					os.Exit(1)
-				}
-			}
-
-			if incTables {
-				if err := writeIndexes(db, out, nil); err != nil {
-					fmt.Fprintln(os.Stderr, err)
-					os.Exit(1)
-				}
-
-				if err := writeForeignKeys(db, out, nil); err != nil {
-					fmt.Fprintln(os.Stderr, err)
-					os.Exit(1)
-				}
-			}
-		}
-
-		if incFunctions {
-			if err := writeFunctions(db, out); err != nil {
-				fmt.Fprintln(os.Stderr, err)
-				os.Exit(1)
-			}
-		}
-
-		if incProcedures {
-			if err := writeProcedures(db, out); err != nil {
-				fmt.Fprintln(os.Stderr, err)
-				os.Exit(1)
-			}
-		}
-
-		if incViews {
-			if err := writeViews(db, out); err != nil {
-				fmt.Fprintln(os.Stderr, err)
-				os.Exit(1)
-			}
-		}
-
-		if incTriggers {
-			if err := writeTriggers(db, out); err != nil {
-				fmt.Fprintln(os.Stderr, err)
-				os.Exit(1)
-			}
-		}
+	target, err := pgsql.NewPgsqlTarget(ctx, targetUrl, textType)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "Failed to connect to source:", err)
+		os.Exit(1)
 	}
-}
+	defer target.Close(ctx)
 
-func setReplicationOn(ctx context.Context, conn *pgx.Conn) error {
-	_, err := conn.Exec(ctx, "set session_replication_role = 'replica';")
-	return err
-}
+	// if incTables || incData {
+	// 	tables, err := source.GetTables(ctx)
+	// 	if err != nil {
+	// 		fmt.Fprintln(os.Stderr, err)
+	// 		os.Exit(1)
+	// 	}
+	//
+	// 	if incData {
+	// 		setReplicationOn(ctx, conn)
+	// 		err := copyAllTableData(ctx, db, conn, tables)
+	// 		setReplicationOff(ctx, conn)
+	//
+	// 		if err != nil {
+	// 			fmt.Fprintln(os.Stderr, "Failed to copy table data: ", err)
+	// 			os.Exit(1)
+	// 		}
+	// 	}
+	// }
 
-func setReplicationOff(ctx context.Context, conn *pgx.Conn) error {
-	_, err := conn.Exec(ctx, "set session_replication_role = 'origin';")
-	return err
-}
+	if incTables || incData {
+		tablesMap, err := source.GetTables(ctx)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
 
-func isConnectionUrl(url string) bool {
-	return !strings.HasPrefix(url, "file://") && strings.Contains(url, "://")
+		tables := values(tablesMap)
+
+		if incTables {
+			if err := target.CreateTables(tables); err != nil {
+				fmt.Fprintln(os.Stderr, err)
+				os.Exit(1)
+			}
+		}
+
+		// if incData {
+		// 	if err := writeAllTableData(db, out, tables); err != nil {
+		// 		fmt.Fprintln(os.Stderr, err)
+		// 		os.Exit(1)
+		// 	}
+		// }
+		//
+		// if incTables {
+		// 	if err := writeIndexes(db, out, nil); err != nil {
+		// 		fmt.Fprintln(os.Stderr, err)
+		// 		os.Exit(1)
+		// 	}
+		//
+		// 	if err := writeForeignKeys(db, out, nil); err != nil {
+		// 		fmt.Fprintln(os.Stderr, err)
+		// 		os.Exit(1)
+		// 	}
+		// }
+	}
+
+	// if incFunctions {
+	// 	if err := writeFunctions(db, out); err != nil {
+	// 		fmt.Fprintln(os.Stderr, err)
+	// 		os.Exit(1)
+	// 	}
+	// }
+	//
+	// if incProcedures {
+	// 	if err := writeProcedures(db, out); err != nil {
+	// 		fmt.Fprintln(os.Stderr, err)
+	// 		os.Exit(1)
+	// 	}
+	// }
+	//
+	// if incViews {
+	// 	if err := writeViews(db, out); err != nil {
+	// 		fmt.Fprintln(os.Stderr, err)
+	// 		os.Exit(1)
+	// 	}
+	// }
+	//
+	// if incTriggers {
+	// 	if err := writeTriggers(db, out); err != nil {
+	// 		fmt.Fprintln(os.Stderr, err)
+	// 		os.Exit(1)
+	// 	}
+	// }
+	// }
 }
 
 func stripEnclosingParens(s string) string {
@@ -253,27 +227,6 @@ func translateDefault(colType, def string) string {
 	}
 
 	return v
-}
-
-func writeTableSchema(db *sql.DB, out io.Writer, table schema.Table, incIndexes bool) error {
-	drop := pgsql.DropTableStatement(table)
-	create := pgsql.CreateTableStatement(table, textType)
-
-	fmt.Fprintf(
-		out,
-		"/* -- %s -- */\n%s\n\n%s\n\n",
-		table.Name,
-		drop,
-		create,
-	)
-
-	if incIndexes {
-		if err := writeIndexes(db, out, &table); err != nil {
-			return err
-		}
-	}
-
-	return nil
 }
 
 func writeTableData(db *sql.DB, out io.Writer, table string) error {
@@ -376,22 +329,6 @@ func writeTableData(db *sql.DB, out io.Writer, table string) error {
 
 	if n > 0 {
 		fmt.Fprintf(out, ";\n\n")
-	}
-
-	return nil
-}
-
-func writeAllTableSchemas(db *sql.DB, out io.Writer, tables []schema.Table, incConstraints bool) error {
-	fmt.Fprintf(out, "/* --------------------- TABLES --------------------- */\n\n")
-
-	if textType == "citext" {
-		fmt.Fprintf(out, "create extension if not exists citext;\n\n")
-	}
-
-	for _, t := range tables {
-		if err := writeTableSchema(db, out, t, incConstraints); err != nil {
-			return err
-		}
 	}
 
 	return nil
