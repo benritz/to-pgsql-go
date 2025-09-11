@@ -90,28 +90,56 @@ func (t *PgsqlTarget) GetTables(ctx context.Context) (map[string]schema.Table, e
 	return t.tableCache, nil
 }
 
-func (t *PgsqlTarget) CreateTables(tables []schema.Table) error {
+func (t *PgsqlTarget) CreateTables(ctx context.Context, tables []schema.Table) error {
 	if t.out != nil {
-		t.writeTablesSchema(tables)
+		if err := t.writeTablesSchema(tables); err != nil {
+			return err
+		}
+		return nil
+	}
+
+	if t.conn != nil {
+		if err := t.createTablesSchema(ctx, tables); err != nil {
+			return err
+		}
+		return nil
 	}
 
 	return nil
 }
 
-func (t *PgsqlTarget) CreateIndexes(indexes []schema.Index) error {
+func (t *PgsqlTarget) CreateIndexes(ctx context.Context, indexes []schema.Index) error {
 	if t.out != nil {
-		t.writeIndexes(indexes)
+		if err := t.writeIndexes(indexes); err != nil {
+			return err
+		}
+		return nil
+	}
+
+	if t.conn != nil {
+		if err := t.createIndexes(ctx, indexes); err != nil {
+			return err
+		}
+		return nil
 	}
 
 	return nil
 }
 
-func (t *PgsqlTarget) CreateForeignKeys(keys []schema.ForeignKey) error {
+func (t *PgsqlTarget) CreateForeignKeys(ctx context.Context, keys []schema.ForeignKey) error {
 	if t.out != nil {
 		if err := t.writeForeignKeys(keys); err != nil {
 			return err
 		}
 	}
+
+	if t.conn != nil {
+		if err := t.createForeignKeys(ctx, keys); err != nil {
+			return err
+		}
+		return nil
+	}
+
 	return nil
 }
 
@@ -342,6 +370,29 @@ func (t *PgsqlTarget) writeTableSchema(table schema.Table) error {
 	return nil
 }
 
+func (t *PgsqlTarget) createTablesSchema(ctx context.Context, tables []schema.Table) error {
+	if _, err := t.conn.Exec(ctx, "create extension if not exists citext;\n\n"); err != nil {
+		return err
+	}
+
+	for _, table := range tables {
+		if err := t.createTableSchema(ctx, table); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+func (t *PgsqlTarget) createTableSchema(ctx context.Context, table schema.Table) error {
+	sql := CreateTableStatement(table, t.textType)
+	_, err := t.conn.Exec(ctx, sql)
+	if err != nil {
+		return fmt.Errorf("Failed to create table %s: %v", table.Name, err)
+	}
+	return nil
+}
+
 func (t *PgsqlTarget) writeIndexes(indexes []schema.Index) error {
 	fmt.Fprintf(t.out, "/* --------------------- INDEXES --------------------- */\n\n")
 
@@ -356,15 +407,30 @@ func (t *PgsqlTarget) writeIndexes(indexes []schema.Index) error {
 
 func (t *PgsqlTarget) writeIndex(index schema.Index) error {
 	create := CreateIndexStatement(index)
-
-	fmt.Fprint(
-		t.out,
-		create,
-	)
+	fmt.Fprint(t.out, create)
 
 	return nil
 }
 
+func (t *PgsqlTarget) createIndexes(ctx context.Context, indexes []schema.Index) error {
+	for _, index := range indexes {
+		if err := t.createIndex(ctx, index); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+func (t *PgsqlTarget) createIndex(ctx context.Context, index schema.Index) error {
+	sql := CreateIndexStatement(index)
+	_, err := t.conn.Exec(ctx, sql)
+	if err != nil {
+		return fmt.Errorf("Failed to create index %v: %v", index, err)
+	}
+
+	return nil
+}
 func (t *PgsqlTarget) writeForeignKeys(keys []schema.ForeignKey) error {
 	fmt.Fprintf(t.out, "/* --------------------- FOREIGN KEYS --------------------- */\n\n")
 
@@ -379,14 +445,31 @@ func (t *PgsqlTarget) writeForeignKeys(keys []schema.ForeignKey) error {
 
 func (t *PgsqlTarget) writeForeignKey(key schema.ForeignKey) error {
 	create := CreateForeignKeyStatement(key)
-
-	fmt.Fprint(
-		t.out,
-		create,
-	)
+	fmt.Fprint(t.out, create)
 
 	return nil
 }
+
+func (t *PgsqlTarget) createForeignKeys(ctx context.Context, keys []schema.ForeignKey) error {
+	for _, key := range keys {
+		if err := t.createForeignKey(ctx, key); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+func (t *PgsqlTarget) createForeignKey(ctx context.Context, key schema.ForeignKey) error {
+	sql := CreateForeignKeyStatement(key)
+	_, err := t.conn.Exec(ctx, sql)
+	if err != nil {
+		return fmt.Errorf("Failed to create foreign key %v: %v", key, err)
+	}
+
+	return nil
+}
+
 func translateIdentifier(identifier string) string {
 	return strings.ToLower(identifier)
 }

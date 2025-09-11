@@ -87,47 +87,6 @@ func main() {
 		os.Exit(1)
 	}
 
-	tablesMap, err := source.GetTables(ctx)
-	if err != nil {
-		fmt.Fprintln(os.Stderr, "Failed to get tables:", err)
-		os.Exit(1)
-	}
-
-	// table, ok := tablesMap["ibt_component_type"]
-	// if !ok {
-	// 	fmt.Fprintln(os.Stderr, "Table IBT_ITEM_TYPE not found in source database")
-	// 	os.Exit(1)
-	// }
-
-	var tables []schema.Table
-	for _, t := range tablesMap {
-		tables = append(tables, t)
-	}
-
-	if err := target.CopyTables(ctx, tables, reader); err != nil {
-		fmt.Fprintln(os.Stderr, "Failed to copy table data:", err)
-		os.Exit(1)
-	}
-
-	// if incTables || incData {
-	// 	tables, err := source.GetTables(ctx)
-	// 	if err != nil {
-	// 		fmt.Fprintln(os.Stderr, err)
-	// 		os.Exit(1)
-	// 	}
-	//
-	// 	if incData {
-	// 		setReplicationOn(ctx, conn)
-	// 		err := copyAllTableData(ctx, db, conn, tables)
-	// 		setReplicationOff(ctx, conn)
-	//
-	// 		if err != nil {
-	// 			fmt.Fprintln(os.Stderr, "Failed to copy table data: ", err)
-	// 			os.Exit(1)
-	// 		}
-	// 	}
-	// }
-
 	if incTables || incData {
 		tablesMap, err := source.GetTables(ctx)
 		if err != nil {
@@ -137,39 +96,39 @@ func main() {
 
 		tables := values(tablesMap)
 
-		indexes, err := source.GetIndexes(ctx)
-		if err != nil {
-			fmt.Fprintln(os.Stderr, err)
-			os.Exit(1)
-		}
-
-		foreignKeys, err := source.GetForeignKeys(ctx)
-		if err != nil {
-			fmt.Fprintln(os.Stderr, err)
-			os.Exit(1)
-		}
-
 		if incTables {
-			if err := target.CreateTables(tables); err != nil {
-				fmt.Fprintln(os.Stderr, err)
+			if err := target.CreateTables(ctx, tables); err != nil {
+				fmt.Fprintln(os.Stderr, "Failed to create table data:", err)
 				os.Exit(1)
 			}
 		}
 
-		// if incData {
-		// 	if err := writeAllTableData(db, out, tables); err != nil {
-		// 		fmt.Fprintln(os.Stderr, err)
-		// 		os.Exit(1)
-		// 	}
-		// }
-		//
+		if incData {
+			if err := target.CopyTables(ctx, tables, reader); err != nil {
+				fmt.Fprintln(os.Stderr, "Failed to copy table data:", err)
+				os.Exit(1)
+			}
+		}
+
 		if incTables {
-			if err := target.CreateIndexes(indexes); err != nil {
+			indexes, err := source.GetIndexes(ctx)
+			if err != nil {
 				fmt.Fprintln(os.Stderr, err)
 				os.Exit(1)
 			}
 
-			if err := target.CreateForeignKeys(foreignKeys); err != nil {
+			if err := target.CreateIndexes(ctx, indexes); err != nil {
+				fmt.Fprintln(os.Stderr, err)
+				os.Exit(1)
+			}
+
+			foreignKeys, err := source.GetForeignKeys(ctx)
+			if err != nil {
+				fmt.Fprintln(os.Stderr, err)
+				os.Exit(1)
+			}
+
+			if err := target.CreateForeignKeys(ctx, foreignKeys); err != nil {
 				fmt.Fprintln(os.Stderr, err)
 				os.Exit(1)
 			}
