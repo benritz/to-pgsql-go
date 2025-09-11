@@ -118,6 +118,12 @@ func main() {
 			os.Exit(1)
 		}
 
+		foreignKeys, err := source.GetForeignKeys(ctx)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
+
 		if incTables {
 			if err := target.CreateTables(tables); err != nil {
 				fmt.Fprintln(os.Stderr, err)
@@ -137,11 +143,11 @@ func main() {
 				fmt.Fprintln(os.Stderr, err)
 				os.Exit(1)
 			}
-			//
-			// 	if err := writeForeignKeys(db, out, nil); err != nil {
-			// 		fmt.Fprintln(os.Stderr, err)
-			// 		os.Exit(1)
-			// 	}
+
+			if err := target.CreateForeignKeys(foreignKeys); err != nil {
+				fmt.Fprintln(os.Stderr, err)
+				os.Exit(1)
+			}
 		}
 	}
 

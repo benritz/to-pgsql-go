@@ -105,6 +105,15 @@ func (t *PgsqlTarget) CreateIndexes(indexes []schema.Index) error {
 	return nil
 }
 
+func (t *PgsqlTarget) CreateForeignKeys(keys []schema.ForeignKey) error {
+	if t.out != nil {
+		if err := t.writeForeignKeys(keys); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 func (t *PgsqlTarget) writeTablesSchema(tables []schema.Table) error {
 	fmt.Fprintf(t.out, "/* --------------------- TABLES --------------------- */\n\n")
 
@@ -150,6 +159,29 @@ func (t *PgsqlTarget) writeIndexes(indexes []schema.Index) error {
 
 func (t *PgsqlTarget) writeIndex(index schema.Index) error {
 	create := CreateIndexStatement(index)
+
+	fmt.Fprint(
+		t.out,
+		create,
+	)
+
+	return nil
+}
+
+func (t *PgsqlTarget) writeForeignKeys(keys []schema.ForeignKey) error {
+	fmt.Fprintf(t.out, "/* --------------------- FOREIGN KEYS --------------------- */\n\n")
+
+	for _, key := range keys {
+		if err := t.writeForeignKey(key); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+func (t *PgsqlTarget) writeForeignKey(key schema.ForeignKey) error {
+	create := CreateForeignKeyStatement(key)
 
 	fmt.Fprint(
 		t.out,
@@ -462,6 +494,19 @@ func CreateIndexStatement(index schema.Index) string {
 	default:
 		return fmt.Sprintf("create index %s on %s (%s);\n", index.Name, index.Table, cols)
 	}
+}
+
+func CreateForeignKeyStatement(key schema.ForeignKey) string {
+	parentCols := strings.Join(key.Columns, ", ")
+	refCols := strings.Join(key.ReferencedColumns, ", ")
+	return fmt.Sprintf(
+		"alter table %s add constraint %s foreign key (%s) references %s (%s);\n",
+		key.Table,
+		key.Name,
+		parentCols,
+		key.ReferencedTable,
+		refCols,
+	)
 }
 
 func ConvertValue(val any, dt schema.DataType) any {
