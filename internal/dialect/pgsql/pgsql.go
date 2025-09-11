@@ -84,7 +84,7 @@ func (t *PgsqlTarget) GetTables(ctx context.Context) (map[string]schema.Table, e
 
 	t.tableCache = make(map[string]schema.Table, len(tables))
 	for _, table := range tables {
-		t.tableCache[table.Name] = table
+		t.tableCache[translateIdentifier(table.Name)] = table
 	}
 
 	return t.tableCache, nil
@@ -115,31 +115,140 @@ func (t *PgsqlTarget) CreateForeignKeys(keys []schema.ForeignKey) error {
 	return nil
 }
 
-func (t *PgsqlTarget) CopyTable(ctx context.Context, tableName string, reader dialect.TableDataReader) error {
+func (t *PgsqlTarget) CopyTable(ctx context.Context, table schema.Table, reader dialect.TableDataReader) error {
+	if t.out != nil {
+		return t.writeTableData(ctx, table, reader)
+	}
+
+	if t.conn != nil {
+		if err := setReplicationOn(ctx, t.conn); err != nil {
+			return err
+		}
+		defer setReplicationOff(ctx, t.conn)
+
+		return t.copyTableData(ctx, table, reader)
+	}
+
+	return nil
+}
+
+func (t *PgsqlTarget) writeTableData(ctx context.Context, table schema.Table, reader dialect.TableDataReader) error {
+	if err := reader.Open(ctx, table.Name, table.Columns); err != nil {
+		return err
+	}
+
+	var copyRows [][]any
+	CopyBatchSize := 1000
+
+	targetTableName := translateIdentifier(table.Name)
+
+	copy := func() error {
+		if len(copyRows) > 0 {
+			fmt.Fprintf(t.out, "insert into %s values ", targetTableName)
+
+			for n, row := range copyRows {
+				valStrs := make([]string, len(row))
+				for i, val := range row {
+					valStrs[i] = convertValueToString(val, table.Columns[i].DataType)
+				}
+
+				if n > 0 {
+					fmt.Fprintf(t.out, ",\n")
+				}
+
+				fmt.Fprintf(t.out, "(%s)", strings.Join(valStrs, ", "))
+			}
+
+			fmt.Fprintf(t.out, ";\n\n")
+		}
+
+		return nil
+	}
+
+	for {
+		row, err := reader.ReadRow()
+		if err != nil {
+			reader.Close(ctx)
+			return err
+		}
+
+		if len(row) == 0 {
+			break
+		}
+
+		copyRow := make([]any, len(table.Columns))
+
+		for i, data := range row {
+			copyRow[i] = ConvertValue(data, table.Columns[i].DataType)
+		}
+
+		copyRows = append(copyRows, copyRow)
+
+		if len(copyRows) >= CopyBatchSize {
+			if err := copy(); err != nil {
+				reader.Close(ctx)
+				return err
+			}
+
+			copyRows = copyRows[:0]
+		}
+	}
+
+	if err := reader.Close(ctx); err != nil {
+		return err
+	}
+
+	if err := copy(); err != nil {
+		return err
+	}
+
+	return nil
+}
+
+func (t *PgsqlTarget) copyTableData(ctx context.Context, table schema.Table, reader dialect.TableDataReader) error {
 	tablesMap, err := t.GetTables(ctx)
 	if err != nil {
 		return err
 	}
 
-	tableName = strings.ToLower(tableName)
+	targetTableName := translateIdentifier(table.Name)
 
-	targetTable, ok := tablesMap[tableName]
+	targetTable, ok := tablesMap[targetTableName]
 	if !ok {
-		return fmt.Errorf("Table %s not found in target database", tableName)
+		return fmt.Errorf("Table %s not found in target database", targetTableName)
 	}
 
 	cols := schema.UpdateableColumns(targetTable)
 
 	colNames := make([]string, len(cols))
 	for n, col := range cols {
-		colNames[n] = strings.ToLower(col.Name)
+		colNames[n] = translateIdentifier(col.Name)
 	}
 
-	if err := reader.Open(ctx, tableName, cols); err != nil {
+	if err := reader.Open(ctx, table.Name, cols); err != nil {
+		return err
+	}
+
+	sql := fmt.Sprintf("truncate table %s cascade;", escapeIdentifier(targetTableName))
+	if _, err := t.conn.Exec(ctx, sql); err != nil {
 		return err
 	}
 
 	var copyRows [][]any
+	CopyBatchSize := 1000
+
+	copy := func() error {
+		if len(copyRows) > 0 {
+			count, err := t.conn.CopyFrom(ctx, pgx.Identifier{targetTableName}, colNames, pgx.CopyFromRows(copyRows))
+			if err != nil {
+				return err
+			}
+
+			fmt.Printf("Copied %d rows into %s\n", count, table.Name)
+		}
+
+		return nil
+	}
 
 	for {
 		row, err := reader.ReadRow()
@@ -159,25 +268,23 @@ func (t *PgsqlTarget) CopyTable(ctx context.Context, tableName string, reader di
 		}
 
 		copyRows = append(copyRows, copyRow)
+
+		if len(copyRows) >= CopyBatchSize {
+			if err := copy(); err != nil {
+				reader.Close(ctx)
+				return err
+			}
+
+			copyRows = copyRows[:0]
+		}
 	}
 
 	if err := reader.Close(ctx); err != nil {
 		return err
 	}
 
-	if _, err := t.conn.Exec(ctx, "truncate table "+tableName+" cascade"); err != nil {
+	if err := copy(); err != nil {
 		return err
-	}
-
-	if len(copyRows) > 0 {
-		fmt.Printf("Copying %d rows into %s...\n", len(copyRows), tableName)
-
-		count, err := t.conn.CopyFrom(ctx, pgx.Identifier{tableName}, colNames, pgx.CopyFromRows(copyRows))
-		if err != nil {
-			return err
-		}
-
-		fmt.Printf("Copied %d rows into %s\n", count, tableName)
 	}
 
 	return nil
@@ -258,6 +365,13 @@ func (t *PgsqlTarget) writeForeignKey(key schema.ForeignKey) error {
 	)
 
 	return nil
+}
+func translateIdentifier(identifier string) string {
+	return strings.ToLower(identifier)
+}
+
+func escapeIdentifier(name string) string {
+	return fmt.Sprintf(`"%s"`, strings.ReplaceAll(name, `"`, `""`))
 }
 
 func isConnectionUrl(url string) bool {
@@ -576,6 +690,30 @@ func CreateForeignKeyStatement(key schema.ForeignKey) string {
 		key.ReferencedTable,
 		refCols,
 	)
+}
+
+func convertValueToString(val any, dt schema.DataType) string {
+	val = ConvertValue(val, dt)
+
+	if val == nil {
+		return "null"
+	}
+
+	switch dt.Kind {
+	case schema.KindVarChar, schema.KindText, schema.KindUUID:
+		return fmt.Sprintf("'%s'", strings.ReplaceAll(fmt.Sprintf("%v", val), "'", "''"))
+	case schema.KindDate:
+		ts := val.(time.Time)
+		return fmt.Sprintf("'%s'", ts.UTC().Format("2006-01-02"))
+	case schema.KindTime:
+		ts := val.(time.Time)
+		return fmt.Sprintf("'%s'", ts.UTC().Format("15:04:05.999999Z07:00"))
+	case schema.KindTimestamp:
+		ts := val.(time.Time)
+		return fmt.Sprintf("'%s'", ts.UTC().Format("2006-01-02 15:04:05.999999Z07:00"))
+	default:
+		return fmt.Sprintf("%v", val)
+	}
 }
 
 func ConvertValue(val any, dt schema.DataType) any {

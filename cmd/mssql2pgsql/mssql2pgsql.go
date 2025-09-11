@@ -87,7 +87,19 @@ func main() {
 		os.Exit(1)
 	}
 
-	if err := target.CopyTable(ctx, "IBT_ITEM_TYPE", reader); err != nil {
+	tablesMap, err := source.GetTables(ctx)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "Failed to get tables:", err)
+		os.Exit(1)
+	}
+
+	table, ok := tablesMap["ibt_component_type"]
+	if !ok {
+		fmt.Fprintln(os.Stderr, "Table IBT_ITEM_TYPE not found in source database")
+		os.Exit(1)
+	}
+
+	if err := target.CopyTable(ctx, table, reader); err != nil {
 		fmt.Fprintln(os.Stderr, "Failed to copy table data:", err)
 		os.Exit(1)
 	}

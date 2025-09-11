@@ -46,7 +46,7 @@ func (s *MssqlSource) GetTables(ctx context.Context) (map[string]schema.Table, e
 
 	s.tableCache = make(map[string]schema.Table, len(tables))
 	for _, table := range tables {
-		s.tableCache[table.Name] = table
+		s.tableCache[strings.ToLower(table.Name)] = table
 	}
 
 	return s.tableCache, nil
