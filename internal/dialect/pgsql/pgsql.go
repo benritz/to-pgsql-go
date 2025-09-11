@@ -115,9 +115,13 @@ func (t *PgsqlTarget) CreateForeignKeys(keys []schema.ForeignKey) error {
 	return nil
 }
 
-func (t *PgsqlTarget) CopyTable(ctx context.Context, table schema.Table, reader dialect.TableDataReader) error {
+func (t *PgsqlTarget) CopyTables(ctx context.Context, table []schema.Table, reader dialect.TableDataReader) error {
 	if t.out != nil {
-		return t.writeTableData(ctx, table, reader)
+		for _, table := range table {
+			if err := t.writeTableData(ctx, table, reader); err != nil {
+				return err
+			}
+		}
 	}
 
 	if t.conn != nil {
@@ -126,7 +130,11 @@ func (t *PgsqlTarget) CopyTable(ctx context.Context, table schema.Table, reader 
 		}
 		defer setReplicationOff(ctx, t.conn)
 
-		return t.copyTableData(ctx, table, reader)
+		for _, table := range table {
+			if err := t.copyTableData(ctx, table, reader); err != nil {
+				return err
+			}
+		}
 	}
 
 	return nil
@@ -142,9 +150,16 @@ func (t *PgsqlTarget) writeTableData(ctx context.Context, table schema.Table, re
 
 	targetTableName := translateIdentifier(table.Name)
 
+	written := false
+
 	copy := func() error {
 		if len(copyRows) > 0 {
-			fmt.Fprintf(t.out, "insert into %s values ", targetTableName)
+			if !written {
+				fmt.Fprintf(t.out, "-- %s\n\n", table.Name)
+				written = true
+			}
+
+			fmt.Fprintf(t.out, "insert into %s values", targetTableName)
 
 			for n, row := range copyRows {
 				valStrs := make([]string, len(row))
@@ -153,10 +168,10 @@ func (t *PgsqlTarget) writeTableData(ctx context.Context, table schema.Table, re
 				}
 
 				if n > 0 {
-					fmt.Fprintf(t.out, ",\n")
+					fmt.Fprintf(t.out, ",")
 				}
 
-				fmt.Fprintf(t.out, "(%s)", strings.Join(valStrs, ", "))
+				fmt.Fprintf(t.out, "\n\t(%s)", strings.Join(valStrs, ", "))
 			}
 
 			fmt.Fprintf(t.out, ";\n\n")

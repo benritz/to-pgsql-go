@@ -93,13 +93,18 @@ func main() {
 		os.Exit(1)
 	}
 
-	table, ok := tablesMap["ibt_component_type"]
-	if !ok {
-		fmt.Fprintln(os.Stderr, "Table IBT_ITEM_TYPE not found in source database")
-		os.Exit(1)
+	// table, ok := tablesMap["ibt_component_type"]
+	// if !ok {
+	// 	fmt.Fprintln(os.Stderr, "Table IBT_ITEM_TYPE not found in source database")
+	// 	os.Exit(1)
+	// }
+
+	var tables []schema.Table
+	for _, t := range tablesMap {
+		tables = append(tables, t)
 	}
 
-	if err := target.CopyTable(ctx, table, reader); err != nil {
+	if err := target.CopyTables(ctx, tables, reader); err != nil {
 		fmt.Fprintln(os.Stderr, "Failed to copy table data:", err)
 		os.Exit(1)
 	}

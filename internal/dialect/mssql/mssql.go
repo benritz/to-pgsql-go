@@ -100,7 +100,7 @@ type MssqlTableDataReader struct {
 func selectClause(cols []schema.Column) string {
 	names := make([]string, len(cols))
 	for i, c := range cols {
-		names[i] = c.Name
+		names[i] = escapeIdentifier(c.Name)
 	}
 	return strings.Join(names, ", ")
 }
@@ -398,6 +398,10 @@ func translateDefault(dt schema.DataType, defaultValue string) string {
 	}
 
 	return v
+}
+
+func escapeIdentifier(identifier string) string {
+	return fmt.Sprintf("[%s]", identifier)
 }
 
 func readIndexes(ctx context.Context, db *sql.DB, table *schema.Table) ([]schema.Index, error) {
