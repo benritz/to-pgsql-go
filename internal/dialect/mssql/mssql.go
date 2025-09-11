@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"benritz/topgsql/internal/schema"
+	_ "github.com/denisenkom/go-mssqldb"
 )
 
 type MssqlSource struct {

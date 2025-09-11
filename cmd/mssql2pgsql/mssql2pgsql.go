@@ -11,9 +11,6 @@ import (
 	"strings"
 	"time"
 
-	_ "github.com/denisenkom/go-mssqldb"
-	"github.com/jackc/pgx/v5"
-
 	"benritz/topgsql/internal/dialect/mssql"
 	"benritz/topgsql/internal/dialect/pgsql"
 	"benritz/topgsql/internal/schema"
@@ -79,7 +76,7 @@ func main() {
 
 	target, err := pgsql.NewPgsqlTarget(ctx, targetUrl, textType)
 	if err != nil {
-		fmt.Fprintln(os.Stderr, "Failed to connect to source:", err)
+		fmt.Fprintln(os.Stderr, "Failed to connect to target:", err)
 		os.Exit(1)
 	}
 	defer target.Close(ctx)
@@ -701,16 +698,6 @@ func copyTableDataGeneric(src *sql.DB, dst *sql.DB, table string) error {
 	return tx.Commit()
 }
 
-func copyAllTableData(ctx context.Context, src *sql.DB, dst *pgx.Conn, tables []schema.Table) error {
-	for _, table := range tables {
-		if err := copyTableData(ctx, src, dst, table); err != nil {
-			return err
-		}
-	}
-
-	return nil
-}
-
 func updateableColumns(table schema.Table) []schema.Column {
 	cols := []schema.Column{}
 	for _, col := range table.Columns {
@@ -727,65 +714,4 @@ func selectClause(cols []schema.Column) string {
 		names[i] = c.Name
 	}
 	return strings.Join(names, ", ")
-}
-
-func copyTableData(ctx context.Context, src *sql.DB, dst *pgx.Conn, table schema.Table) error {
-	cols := updateableColumns(table)
-
-	query := fmt.Sprintf("select %s from %s", selectClause(cols), table.Name)
-	rows, err := src.Query(query)
-	if err != nil {
-		return err
-	}
-	defer rows.Close()
-
-	row := make([]any, len(cols))
-	rowPtrs := make([]any, len(cols))
-	for i := range row {
-		rowPtrs[i] = &row[i]
-	}
-
-	var copyRows [][]any
-
-	copyCols := make([]string, len(cols))
-	for i, c := range cols {
-		copyCols[i] = strings.ToLower(c.Name)
-	}
-
-	for rows.Next() {
-		if err := rows.Scan(rowPtrs...); err != nil {
-			return err
-		}
-
-		copyRow := make([]any, len(cols))
-
-		for i, data := range row {
-			copyRow[i] = pgsql.ConvertValue(data, cols[i].DataType)
-		}
-
-		copyRows = append(copyRows, copyRow)
-	}
-
-	if err := rows.Err(); err != nil {
-		return err
-	}
-
-	tableName := strings.ToLower(table.Name)
-
-	if _, err := dst.Exec(ctx, "truncate table "+tableName+" cascade"); err != nil {
-		return err
-	}
-
-	if len(copyRows) > 0 {
-		fmt.Printf("Copying %d rows into %s...\n", len(copyRows), table.Name)
-
-		count, err := dst.CopyFrom(ctx, pgx.Identifier{tableName}, copyCols, pgx.CopyFromRows(copyRows))
-		if err != nil {
-			return err
-		}
-
-		fmt.Printf("Copied %d rows into %s\n", count, table.Name)
-	}
-
-	return nil
 }
