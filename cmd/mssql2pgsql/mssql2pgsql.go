@@ -84,6 +84,17 @@ func main() {
 	}
 	defer target.Close(ctx)
 
+	reader, err := source.NewTableDataReader(ctx)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "Failed to create table data reader:", err)
+		os.Exit(1)
+	}
+
+	if err := target.CopyTable(ctx, "IBT_ITEM_TYPE", reader); err != nil {
+		fmt.Fprintln(os.Stderr, "Failed to copy table data:", err)
+		os.Exit(1)
+	}
+
 	// if incTables || incData {
 	// 	tables, err := source.GetTables(ctx)
 	// 	if err != nil {

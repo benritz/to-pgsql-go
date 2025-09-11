@@ -74,3 +74,13 @@ type ForeignKey struct {
 	ReferencedTable   string
 	ReferencedColumns []string
 }
+
+func UpdateableColumns(table Table) []Column {
+	cols := []Column{}
+	for _, col := range table.Columns {
+		if !col.IsComputed {
+			cols = append(cols, col)
+		}
+	}
+	return cols
+}

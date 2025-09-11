@@ -81,6 +81,62 @@ func (s *MssqlSource) GetForeignKeys(ctx context.Context) ([]schema.ForeignKey, 
 	return s.foreignKeyCache, nil
 }
 
+func (s *MssqlSource) NewTableDataReader(ctx context.Context) (*MssqlTableDataReader, error) {
+	reader := MssqlTableDataReader{
+		source: s,
+	}
+
+	return &reader, nil
+}
+
+type MssqlTableDataReader struct {
+	source  *MssqlSource
+	rows    *sql.Rows
+	row     []any
+	rowPtrs []any
+}
+
+func selectClause(cols []schema.Column) string {
+	names := make([]string, len(cols))
+	for i, c := range cols {
+		names[i] = c.Name
+	}
+	return strings.Join(names, ", ")
+}
+
+func (r *MssqlTableDataReader) Open(ctx context.Context, table string, cols []schema.Column) error {
+	query := fmt.Sprintf("select %s from %s", selectClause(cols), table)
+	rows, err := r.source.db.QueryContext(ctx, query)
+	if err != nil {
+		return err
+	}
+
+	r.rows = rows
+	r.row = make([]any, len(cols))
+	r.rowPtrs = make([]any, len(cols))
+	for i := range r.row {
+		r.rowPtrs[i] = &r.row[i]
+	}
+
+	return nil
+}
+
+func (r *MssqlTableDataReader) ReadRow() ([]any, error) {
+	if !r.rows.Next() {
+		return []any{}, nil
+	}
+	err := r.rows.Scan(r.rowPtrs...)
+	return r.row, err
+}
+
+func (r *MssqlTableDataReader) Close(ctx context.Context) error {
+	defer r.rows.Close()
+	if err := r.rows.Err(); err != nil {
+		return err
+	}
+	return nil
+}
+
 func toDataType(baseType string, maxLength, precision, scale int, isAutoInc bool) schema.DataType {
 	raw := strings.ToLower(baseType)
 	dt := schema.DataType{Kind: schema.KindUnknown, Raw: raw}

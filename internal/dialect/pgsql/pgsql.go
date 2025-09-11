@@ -9,6 +9,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"benritz/topgsql/internal/dialect"
 	"benritz/topgsql/internal/schema"
 )
 
@@ -111,6 +112,74 @@ func (t *PgsqlTarget) CreateForeignKeys(keys []schema.ForeignKey) error {
 			return err
 		}
 	}
+	return nil
+}
+
+func (t *PgsqlTarget) CopyTable(ctx context.Context, tableName string, reader dialect.TableDataReader) error {
+	tablesMap, err := t.GetTables(ctx)
+	if err != nil {
+		return err
+	}
+
+	tableName = strings.ToLower(tableName)
+
+	targetTable, ok := tablesMap[tableName]
+	if !ok {
+		return fmt.Errorf("Table %s not found in target database", tableName)
+	}
+
+	cols := schema.UpdateableColumns(targetTable)
+
+	colNames := make([]string, len(cols))
+	for n, col := range cols {
+		colNames[n] = strings.ToLower(col.Name)
+	}
+
+	if err := reader.Open(ctx, tableName, cols); err != nil {
+		return err
+	}
+
+	var copyRows [][]any
+
+	for {
+		row, err := reader.ReadRow()
+		if err != nil {
+			reader.Close(ctx)
+			return err
+		}
+
+		if len(row) == 0 {
+			break
+		}
+
+		copyRow := make([]any, len(cols))
+
+		for i, data := range row {
+			copyRow[i] = ConvertValue(data, cols[i].DataType)
+		}
+
+		copyRows = append(copyRows, copyRow)
+	}
+
+	if err := reader.Close(ctx); err != nil {
+		return err
+	}
+
+	if _, err := t.conn.Exec(ctx, "truncate table "+tableName+" cascade"); err != nil {
+		return err
+	}
+
+	if len(copyRows) > 0 {
+		fmt.Printf("Copying %d rows into %s...\n", len(copyRows), tableName)
+
+		count, err := t.conn.CopyFrom(ctx, pgx.Identifier{tableName}, colNames, pgx.CopyFromRows(copyRows))
+		if err != nil {
+			return err
+		}
+
+		fmt.Printf("Copied %d rows into %s\n", count, tableName)
+	}
+
 	return nil
 }
 
