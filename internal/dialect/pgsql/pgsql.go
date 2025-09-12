@@ -150,6 +150,8 @@ func (t *PgsqlTarget) CopyTables(ctx context.Context, table []schema.Table, read
 				return err
 			}
 		}
+
+		t.writeSeqReset()
 	}
 
 	if t.conn != nil {
@@ -246,6 +248,46 @@ func (t *PgsqlTarget) writeTableData(ctx context.Context, table schema.Table, re
 	}
 
 	return nil
+}
+
+func (t *PgsqlTarget) writeSeqReset() {
+	fmt.Fprintf(t.out, `create or replace function seq_field_max_value(seq_oid oid) returns bigint
+volatile strict language plpgsql as $$ 
+declare
+    target_table regclass;
+    target_column name;
+    max_value bigint;
+begin
+    -- Find the table and column that the sequence is associated with
+    -- using a much simpler and more direct approach.
+    select distinct 
+        d.refobjid::regclass,
+        a.attname
+    into 
+        target_table,
+        target_column
+    from pg_depend d
+    join pg_class c on d.objid = c.oid and c.relkind = 'S'
+    join pg_attribute a on d.refobjid = a.attrelid and d.refobjsubid = a.attnum
+    where c.oid = seq_oid
+      and d.deptype = 'a'; -- 'a' denotes an automatic dependency from a sequence to a column
+
+    -- Check if a dependency was found
+    if target_table is null or target_column is null then
+        return null;
+    end if;
+
+    -- Execute a single dynamic query to find the maximum value in the column
+    execute 'select max(' || quote_ident(target_column) || ') from ' || target_table
+    into max_value;
+
+    return max_value;
+
+end;
+$$;`)
+
+	fmt.Fprintf(t.out, "-- set any sequence to the maximum value of the sequence's field\n")
+	fmt.Fprintf(t.out, "select relname, setval(oid, seq_field_max_value(oid)) from pg_class where relkind = 'S';\n\n")
 }
 
 func (t *PgsqlTarget) copyTableData(ctx context.Context, table schema.Table, reader dialect.TableDataReader) error {
