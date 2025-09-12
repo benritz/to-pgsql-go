@@ -208,7 +208,7 @@ func toDataType(baseType string, maxLength, precision, scale int, isAutoInc bool
 	return dt
 }
 
-func fromDatatype(dt schema.DataType) string {
+func fromDataType(dt schema.DataType) string {
 	switch dt.Kind {
 	case schema.KindSerialInt32, schema.KindInt32:
 		return "int"

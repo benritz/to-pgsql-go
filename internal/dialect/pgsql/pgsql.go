@@ -850,7 +850,7 @@ func ConvertValue(val any, dt schema.DataType) any {
 		case schema.KindUUID:
 			return strings.ToLower(strings.TrimSpace(v))
 		default:
-			return v
+			return dialect.StripNull(v)
 		}
 	case time.Time:
 		return v.UTC()
