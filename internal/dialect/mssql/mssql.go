@@ -16,6 +16,10 @@ type MssqlSource struct {
 	tableCache      map[string]schema.Table
 	indexCache      []schema.Index
 	foreignKeyCache []schema.ForeignKey
+	functionCache   []schema.Function
+	procedureCache  []schema.Procedure
+	viewCache       []schema.View
+	triggerCache    []schema.Trigger
 }
 
 func NewMssqlSource(connectionUrl string) (*MssqlSource, error) {
@@ -92,6 +96,66 @@ func (s *MssqlSource) GetForeignKeys(ctx context.Context) ([]schema.ForeignKey, 
 	s.foreignKeyCache = keys
 
 	return s.foreignKeyCache, nil
+}
+
+func (s *MssqlSource) GetFunctions(ctx context.Context) ([]schema.Function, error) {
+	if s.functionCache != nil {
+		return s.functionCache, nil
+	}
+
+	funcs, err := readFunctions(ctx, s.db)
+	if err != nil {
+		return nil, err
+	}
+
+	s.functionCache = funcs
+
+	return s.functionCache, nil
+}
+
+func (s *MssqlSource) GetProcedures(ctx context.Context) ([]schema.Procedure, error) {
+	if s.procedureCache != nil {
+		return s.procedureCache, nil
+	}
+
+	procs, err := readProcedures(ctx, s.db)
+	if err != nil {
+		return nil, err
+	}
+
+	s.procedureCache = procs
+
+	return s.procedureCache, nil
+}
+
+func (s *MssqlSource) GetViews(ctx context.Context) ([]schema.View, error) {
+	if s.viewCache != nil {
+		return s.viewCache, nil
+	}
+
+	views, err := readViews(ctx, s.db)
+	if err != nil {
+		return nil, err
+	}
+
+	s.viewCache = views
+
+	return s.viewCache, nil
+}
+
+func (s *MssqlSource) GetTriggers(ctx context.Context) ([]schema.Trigger, error) {
+	if s.triggerCache != nil {
+		return s.triggerCache, nil
+	}
+
+	triggers, err := readTriggers(ctx, s.db)
+	if err != nil {
+		return nil, err
+	}
+
+	s.triggerCache = triggers
+
+	return s.triggerCache, nil
 }
 
 func (s *MssqlSource) NewTableDataReader(ctx context.Context) (*MssqlTableDataReader, error) {
@@ -436,7 +500,7 @@ func translateBool(s string, table *schema.Table) string {
 		return s
 	}
 
-	re := regexp.MustCompile(`(?i)\b([A-Za-z_][A-Za-z0-9_]*)\b\s*=\s*\(?'?(-?1|0)'?\)?`)
+	re := regexp.MustCompile(`(?i)\b([A-Za-z_][A-Za-z0-9_]*)\b\s*=\s*\('?(-?1|0)'?\)?`)
 
 	s = re.ReplaceAllStringFunc(s, func(m string) string {
 		sub := re.FindStringSubmatch(m)
@@ -492,17 +556,17 @@ func escapeIdentifier(identifier string) string {
 
 func (s *MssqlSource) readIndexes(ctx context.Context, db *sql.DB, table *schema.Table) ([]schema.Index, error) {
 	q := `SELECT 
-	    t.name AS table_name,
-	    i.name AS index_name,
-	    c.name AS column_name,
-	    ic.index_column_id,
-	    ic.key_ordinal,
-	    ic.is_included_column,
-	    i.is_primary_key,
-	    i.is_unique_constraint,
-	    i.is_unique,
-	    i.has_filter,
-	    i.filter_definition
+    t.name AS table_name,
+    i.name AS index_name,
+    c.name AS column_name,
+    ic.index_column_id,
+    ic.key_ordinal,
+    ic.is_included_column,
+    i.is_primary_key,
+    i.is_unique_constraint,
+    i.is_unique,
+    i.has_filter,
+    i.filter_definition
 	FROM sys.indexes i
 	JOIN sys.tables t ON i.object_id = t.object_id
 	JOIN sys.index_columns ic ON i.object_id = ic.object_id AND i.index_id = ic.index_id
@@ -612,7 +676,7 @@ func (s *MssqlSource) readIndexes(ctx context.Context, db *sql.DB, table *schema
 }
 
 func readForeignKeys(ctx context.Context, db *sql.DB, table *schema.Table) ([]schema.ForeignKey, error) {
-	q := "select fk.name as key_name, t.name as parent_table, c.name as parent_column, rt.name as referenced_table, rc.name as referenced_column, fkc.constraint_column_id as constraint_column_id from sys.tables t, sys.tables rt, sys.columns c, sys.columns rc, sys.foreign_keys fk, sys.foreign_key_columns fkc where fk.object_id = fkc.constraint_object_id and t.object_id = fk.parent_object_id and fkc.parent_column_id = c.column_id and c.object_id = t.object_id and rt.object_id = fk.referenced_object_id and fkc.referenced_column_id = rc.column_id and rc.object_id = rt.object_id"
+	q := "select fk.name as key_name, t.name as parent_table, c.name as parent_column, rt.name as referenced_table, rc.name as referenced_column, fkc.constraint_column_id as constraint_column_id from sys.tables t, sys.tables rt, sys.columns c, sys.columns rc, sys.foreign_keys fk, sys.foreign_key_columns fkc where fk.object_id = fkc.constraint_object_id and t.object_id = fk.parent_object_id and fkc.parent_column_id = c.column_id and c.object_id = t.object_id and rt.object_id = fk.referenced_object_id and fkc.referenced_column_id = rc.column_id"
 	args := []any{}
 
 	if table != nil {
@@ -680,4 +744,95 @@ func readForeignKeys(ctx context.Context, db *sql.DB, table *schema.Table) ([]sc
 	}
 
 	return result, nil
+}
+
+func readCompiledObjects[T any](ctx context.Context, db *sql.DB, objType string, builder func(name, definition string) T) ([]T, error) {
+	query := `select object_schema_name(o.object_id) as schema_name, o.name, object_definition(o.object_id) as definition
+		from sys.objects o
+		where o.type = @p1 and o.is_ms_shipped = 0
+		order by object_schema_name(o.object_id), o.name`
+
+	rows, err := db.QueryContext(ctx, query, objType)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var result []T
+	for rows.Next() {
+		var schemaName, name string
+		var def sql.NullString
+		if err := rows.Scan(&schemaName, &name, &def); err != nil {
+			return nil, err
+		}
+		if !def.Valid {
+			continue
+		}
+		// qualified := fmt.Sprintf("%s.%s", schemaName, name)
+		definition := normalizeLineEndings(def.String)
+		if objType == "V" {
+			definition = translateViewDef(definition)
+		}
+		result = append(result, builder(name, definition))
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return result, nil
+}
+
+func readFunctions(ctx context.Context, db *sql.DB) ([]schema.Function, error) {
+	return readCompiledObjects(ctx, db, "FN", func(name, definition string) schema.Function {
+		return schema.Function{Name: name, Definition: definition}
+	})
+}
+
+func readProcedures(ctx context.Context, db *sql.DB) ([]schema.Procedure, error) {
+	return readCompiledObjects(ctx, db, "P", func(name, definition string) schema.Procedure {
+		return schema.Procedure{Name: name, Definition: definition}
+	})
+}
+
+func readViews(ctx context.Context, db *sql.DB) ([]schema.View, error) {
+	return readCompiledObjects(ctx, db, "V", func(name, definition string) schema.View {
+		return schema.View{Name: name, Definition: definition}
+	})
+}
+
+func readTriggers(ctx context.Context, db *sql.DB) ([]schema.Trigger, error) {
+	return readCompiledObjects(ctx, db, "TR", func(name, definition string) schema.Trigger {
+		return schema.Trigger{Name: name, Definition: definition}
+	})
+}
+
+func normalizeLineEndings(s string) string {
+	s = strings.ReplaceAll(s, "\r\n", "\n")
+	s = strings.ReplaceAll(s, "\r", "\n")
+	return s
+}
+
+func translateViewDef(s string) string {
+	s = strings.TrimSpace(s)
+
+	// reNLiteral := regexp.MustCompile(`(?i)\bN'((?:[^']|'')*)'`)
+	// s = reNLiteral.ReplaceAllString(s, `'${1}'`)
+
+	reAsSingleAlias := regexp.MustCompile(`(?i)\bas\s*'([^']+)'`)
+	s = reAsSingleAlias.ReplaceAllString(s, "AS $1")
+	reAsDoubleAlias := regexp.MustCompile(`(?i)\bas\s*"([^"]+)"`)
+	s = reAsDoubleAlias.ReplaceAllString(s, "AS $1")
+
+	reConcatLeft := regexp.MustCompile(`(?i)(N?'(?:[^']|'')*')\s*\+\s*`)
+	s = reConcatLeft.ReplaceAllString(s, "$1 || ")
+	reConcatRight := regexp.MustCompile(`(?i)\s*\+\s*(N?'(?:[^']|'')*')`)
+	s = reConcatRight.ReplaceAllString(s, " || $1")
+
+	reTrailingGo := regexp.MustCompile(`(?mi)(?:\r?\n)[ \t]*GO[ \t]*\s*$`)
+	s = reTrailingGo.ReplaceAllString(s, "\n")
+
+	if !strings.HasSuffix(s, ";") {
+		s += ";"
+	}
+
+	return s
 }

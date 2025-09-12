@@ -95,3 +95,23 @@ func UpdateableColumns(table Table) []Column {
 	}
 	return cols
 }
+
+type Function struct {
+	Name       string
+	Definition string
+}
+
+type Procedure struct {
+	Name       string
+	Definition string
+}
+
+type View struct {
+	Name       string
+	Definition string
+}
+
+type Trigger struct {
+	Name       string
+	Definition string
+}
