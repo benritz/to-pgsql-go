@@ -259,7 +259,7 @@ func (t *PgsqlTarget) writeSeqReset() {
 
 	fmt.Fprintf(
 		t.out,
-		"/* --------------------- SEQUENCE RESET --------------------- */\n\n%s\n\n-- set any sequence to the maximum value of the sequence's field\n%s",
+		"/* --------------------- SEQUENCE RESET --------------------- */\n\n%s\n\n-- set any sequence to the maximum value of the sequence's field\n%s\n\n",
 		CreateSeqResetFnStatement(),
 		ExecSeqResetFnStatement(),
 	)
