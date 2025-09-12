@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"regexp"
 	"strings"
 
 	"benritz/topgsql/internal/schema"
@@ -52,12 +53,23 @@ func (s *MssqlSource) GetTables(ctx context.Context) (map[string]schema.Table, e
 	return s.tableCache, nil
 }
 
+func (s *MssqlSource) GetTable(ctx context.Context, name string) (*schema.Table, error) {
+	tablesMap, err := s.GetTables(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if t, ok := tablesMap[strings.ToLower(name)]; ok {
+		return &t, nil
+	}
+	return nil, nil
+}
+
 func (s *MssqlSource) GetIndexes(ctx context.Context) ([]schema.Index, error) {
 	if s.indexCache != nil {
 		return s.indexCache, nil
 	}
 
-	indexes, err := readIndexes(ctx, s.db, nil)
+	indexes, err := s.readIndexes(ctx, s.db, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -332,6 +344,8 @@ func getTables(ctx context.Context, db *sql.DB) ([]schema.Table, error) {
 			if !isAutoInc &&
 				strings.HasPrefix(strings.ToLower(strings.TrimSpace(defaultValue)), "next value for ") {
 				isAutoInc = true
+				// recompute data type for auto-increment
+				dt = toDataType(colType, maxLength, precision, scale, isAutoInc)
 			}
 		}
 
@@ -372,48 +386,135 @@ func stripEnclosing(s, first, last string) string {
 }
 
 func translateDefault(dt schema.DataType, defaultValue string) string {
+	defaultValue = strings.TrimSpace(defaultValue)
 	if defaultValue == "" {
 		return ""
 	}
 
 	v := stripEnclosing(defaultValue, "(", ")")
-
-	if strings.EqualFold(v, "getutcdate()") ||
-		strings.EqualFold(v, "sysutcdatetime()") {
-		v = "{{Now.UTC}}"
-	} else if strings.EqualFold(v, "getdate()") ||
-		strings.EqualFold(v, "sysdatetime()") ||
-		strings.EqualFold(v, "current_timestamp") {
-		v = "{{Now.Local}}"
-	}
+	v = translateNowFn(v)
 
 	if dt.Kind == schema.KindBool {
 		v = stripEnclosing(v, "'", "'")
 		switch v {
 		case "1", "-1":
-			v = "true"
+			v = "{{True}}"
 		case "0":
-			v = "false"
+			v = "{{False}}"
 		}
 	}
 
 	return v
 }
 
+func translateNowFn(s string) string {
+	replacements := []struct{ pattern, replacement string }{
+		{`(?i)getdate\(\)`, "{{Now.Local}}"},
+		{`(?i)sysdatetime\(\)`, "{{Now.Local}}"},
+		{`(?i)getutcdate\(\)`, "{{Now.UTC}}"},
+		{`(?i)sysutcdatetime\(\)`, "{{Now.UTC}}"},
+	}
+	for _, r := range replacements {
+		re := regexp.MustCompile(r.pattern)
+		s = re.ReplaceAllString(s, r.replacement)
+	}
+	return s
+}
+
+func translateQuotedIdentifier(s string) string {
+	re := regexp.MustCompile(`\[([^\]]+)\]`)
+	return re.ReplaceAllString(s, "$1")
+}
+
+func translateCoalesceFn(s string) string {
+	re := regexp.MustCompile(`(?i)isnull\s*\(`)
+	return re.ReplaceAllString(s, "coalesce(")
+}
+
+func translateBool(s string, table *schema.Table) string {
+	if table == nil {
+		return s
+	}
+
+	re := regexp.MustCompile(`(?i)\b([A-Za-z_][A-Za-z0-9_]*)\b\s*=\s*\(?'?(-?1|0)'?\)?`)
+
+	s = re.ReplaceAllStringFunc(s, func(m string) string {
+		sub := re.FindStringSubmatch(m)
+		if len(sub) != 3 {
+			return m
+		}
+		columnName := sub[1]
+		value := sub[2]
+
+		col := table.GetColumn(columnName)
+		if col == nil {
+			return m
+		}
+
+		if col.DataType.Kind != schema.KindBool {
+			return m
+		}
+
+		var marker string
+		switch value {
+		case "1", "-1":
+			marker = "{{True}}"
+		case "0":
+			marker = "{{False}}"
+		default:
+			return m
+		}
+
+		return fmt.Sprintf("%s=%s", columnName, marker)
+	})
+
+	return s
+}
+
+func translateIndexFilter(filter string, table *schema.Table) string {
+	filter = strings.TrimSpace(filter)
+	if filter == "" {
+		return ""
+	}
+
+	filter = stripEnclosing(filter, "(", ")")
+	filter = translateNowFn(filter)
+	filter = translateQuotedIdentifier(filter)
+	filter = translateCoalesceFn(filter)
+	filter = translateBool(filter, table)
+
+	return filter
+}
+
 func escapeIdentifier(identifier string) string {
 	return fmt.Sprintf("[%s]", identifier)
 }
 
-func readIndexes(ctx context.Context, db *sql.DB, table *schema.Table) ([]schema.Index, error) {
-	q := "select t.name as table_name, c.name as column_name, i.name as index_name, ic.index_column_id, i.is_primary_key, i.is_unique_constraint, i.is_unique from sys.indexes i, sys.index_columns ic, sys.tables t, sys.columns c where i.object_id = t.object_id and ic.object_id = t.object_id and ic.index_id = i.index_id and t.object_id = c.object_id and ic.column_id = c.column_id"
+func (s *MssqlSource) readIndexes(ctx context.Context, db *sql.DB, table *schema.Table) ([]schema.Index, error) {
+	q := `SELECT 
+	    t.name AS table_name,
+	    i.name AS index_name,
+	    c.name AS column_name,
+	    ic.index_column_id,
+	    ic.key_ordinal,
+	    ic.is_included_column,
+	    i.is_primary_key,
+	    i.is_unique_constraint,
+	    i.is_unique,
+	    i.has_filter,
+	    i.filter_definition
+	FROM sys.indexes i
+	JOIN sys.tables t ON i.object_id = t.object_id
+	JOIN sys.index_columns ic ON i.object_id = ic.object_id AND i.index_id = ic.index_id
+	JOIN sys.columns c ON ic.object_id = c.object_id AND ic.column_id = c.column_id`
 	args := []any{}
 
 	if table != nil {
-		q += " and t.name = @p1 "
+		q += " WHERE t.name = @p1 "
 		args = append(args, table.Name)
 	}
 
-	q += " order by t.name asc, t.object_id asc, i.index_id asc, ic.index_column_id asc"
+	q += " ORDER BY t.name ASC, t.object_id ASC, i.index_id ASC, ic.index_column_id ASC"
 
 	rows, err := db.QueryContext(ctx, q, args...)
 	if err != nil {
@@ -422,22 +523,39 @@ func readIndexes(ctx context.Context, db *sql.DB, table *schema.Table) ([]schema
 	defer rows.Close()
 
 	var (
-		result []schema.Index
-		cur    schema.Index
+		result    []schema.Index
+		cur       schema.Index
+		lastTable string
+		lastIndex string
 	)
 
 	for rows.Next() {
 		var (
-			tableName, columnName, indexName string
-			indexColumnID                    int
+			tableName, indexName, columnName string
+			indexColumnID, keyOrdinal        int
+			isIncluded                       bool
 			pk, uc, uq                       bool
+			hasFilter                        bool
+			filterDefinitionNull             sql.NullString
 		)
 
-		if err := rows.Scan(&tableName, &columnName, &indexName, &indexColumnID, &pk, &uc, &uq); err != nil {
+		if err := rows.Scan(
+			&tableName,
+			&indexName,
+			&columnName,
+			&indexColumnID,
+			&keyOrdinal,
+			&isIncluded,
+			&pk,
+			&uc,
+			&uq,
+			&hasFilter,
+			&filterDefinitionNull,
+		); err != nil {
 			return nil, err
 		}
 
-		if indexColumnID == 1 {
+		if indexName != lastIndex || tableName != lastTable {
 			if cur.Name != "" {
 				result = append(result, cur)
 			}
@@ -453,15 +571,33 @@ func readIndexes(ctx context.Context, db *sql.DB, table *schema.Table) ([]schema
 				it = schema.IndexTypeNonUnique
 			}
 
-			cur = schema.Index{
-				Table:     tableName,
-				Name:      indexName,
-				Columns:   []string{},
-				IndexType: it,
+			filter := ""
+			if hasFilter && filterDefinitionNull.Valid {
+				table, err := s.GetTable(ctx, tableName)
+				if err != nil {
+					return nil, err
+				}
+				filter = translateIndexFilter(filterDefinitionNull.String, table)
 			}
+
+			cur = schema.Index{
+				Table:          tableName,
+				Name:           indexName,
+				Columns:        []string{},
+				IncludeColumns: []string{},
+				Filter:         filter,
+				IndexType:      it,
+			}
+			lastTable = tableName
+			lastIndex = indexName
 		}
 
-		cur.Columns = append(cur.Columns, columnName)
+		// keyOrdinal > 0 indicates key column order; 0 means included column
+		if isIncluded || keyOrdinal == 0 {
+			cur.IncludeColumns = append(cur.IncludeColumns, columnName)
+		} else {
+			cur.Columns = append(cur.Columns, columnName)
+		}
 	}
 
 	if err := rows.Err(); err != nil {

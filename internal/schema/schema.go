@@ -51,6 +51,15 @@ type Table struct {
 	Columns []Column
 }
 
+func (t *Table) GetColumn(name string) *Column {
+	for i, col := range t.Columns {
+		if col.Name == name {
+			return &t.Columns[i]
+		}
+	}
+	return nil
+}
+
 type IndexType string
 
 const (
@@ -61,10 +70,12 @@ const (
 )
 
 type Index struct {
-	Table     string
-	Name      string
-	Columns   []string
-	IndexType IndexType
+	Table          string
+	Name           string
+	Columns        []string
+	IncludeColumns []string
+	Filter         string
+	IndexType      IndexType
 }
 
 type ForeignKey struct {

@@ -8,6 +8,7 @@ import (
 	"io"
 	"os"
 	"regexp"
+	"sort"
 	"strings"
 	"time"
 
@@ -95,6 +96,9 @@ func main() {
 		}
 
 		tables := values(tablesMap)
+		sort.Slice(tables, func(i, j int) bool {
+			return strings.ToLower(tables[i].Name) < strings.ToLower(tables[j].Name)
+		})
 
 		if incTables {
 			if err := target.CreateTables(ctx, tables); err != nil {

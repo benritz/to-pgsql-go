@@ -183,7 +183,7 @@ func (t *PgsqlTarget) writeTableData(ctx context.Context, table schema.Table, re
 	copy := func() error {
 		if len(copyRows) > 0 {
 			if !written {
-				fmt.Fprintf(t.out, "-- %s\n\n", table.Name)
+				fmt.Fprintf(t.out, "-- %s\n", table.Name)
 				written = true
 			}
 
@@ -352,6 +352,8 @@ func (t *PgsqlTarget) writeTablesSchema(tables []schema.Table) error {
 		}
 	}
 
+	fmt.Fprint(t.out, "\n")
+
 	return nil
 }
 
@@ -402,6 +404,8 @@ func (t *PgsqlTarget) writeIndexes(indexes []schema.Index) error {
 		}
 	}
 
+	fmt.Fprint(t.out, "\n\n")
+
 	return nil
 }
 
@@ -439,6 +443,8 @@ func (t *PgsqlTarget) writeForeignKeys(keys []schema.ForeignKey) error {
 			return err
 		}
 	}
+
+	fmt.Fprint(t.out, "\n\n")
 
 	return nil
 }
@@ -684,7 +690,7 @@ func fromDatatype(dt schema.DataType, textType string) string {
 		}
 		return "numeric"
 	case schema.KindMoney:
-		return "numeric(19, 4)"
+		return "numeric(19,4)"
 	case schema.KindVarChar:
 		if textType == "text" {
 			return "text"
@@ -734,11 +740,11 @@ func CreateTableStatement(table schema.Table, textType string) string {
 			columnDefs += ",\n"
 		}
 
-		columnDefs += column.Name + " "
+		columnDefs += "\t" + column.Name + " "
 		columnDefs += fromDatatype(column.DataType, textType)
 
 		if column.Default != "" && !column.IsAutoInc {
-			columnDefs += " default " + toDefault(column.Default)
+			columnDefs += " default " + translateMarkers(column.Default)
 		}
 		if !column.IsNullable {
 			columnDefs += " not"
@@ -755,31 +761,35 @@ func CreateTableStatement(table schema.Table, textType string) string {
 	return sql
 }
 
-func toDefault(def string) string {
-	if def == "{{Now.Local}}" {
-		return "now()"
-	}
-
-	if def == "{{Now.UTC}}" {
-		return "now() at time zone 'utc'"
-	}
-
-	return def
+func translateMarkers(s string) string {
+	s = strings.ReplaceAll(s, "{{Now.Local}}", "now()")
+	s = strings.ReplaceAll(s, "{{Now.UTC}}", "now() at time zone 'utc'")
+	s = strings.ReplaceAll(s, "{{True}}", "true")
+	s = strings.ReplaceAll(s, "{{False}}", "false")
+	return s
 }
 
 func CreateIndexStatement(index schema.Index) string {
 	cols := strings.Join(index.Columns, ", ")
+	include := ""
+	if len(index.IncludeColumns) > 0 {
+		include = " include (" + strings.Join(index.IncludeColumns, ", ") + ")"
+	}
+	filter := ""
+	if index.Filter != "" {
+		filter = " where " + translateMarkers(index.Filter)
+	}
 	switch index.IndexType {
 	case schema.IndexTypePrimaryKey:
 		return fmt.Sprintf("alter table %s add constraint %s primary key (%s);\n", index.Table, index.Name, cols)
 	case schema.IndexTypeUniqueConstraint:
 		return fmt.Sprintf("alter table %s add constraint %s unique (%s);\n", index.Table, index.Name, cols)
 	case schema.IndexTypeUnique:
-		return fmt.Sprintf("create unique index %s on %s (%s);\n", index.Name, index.Table, cols)
+		return fmt.Sprintf("create unique index %s on %s (%s)%s%s;\n", index.Name, index.Table, cols, include, filter)
 	case schema.IndexTypeNonUnique:
 		fallthrough
 	default:
-		return fmt.Sprintf("create index %s on %s (%s);\n", index.Name, index.Table, cols)
+		return fmt.Sprintf("create index %s on %s (%s)%s%s;\n", index.Name, index.Table, cols, include, filter)
 	}
 }
 
