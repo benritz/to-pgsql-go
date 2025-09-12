@@ -676,7 +676,20 @@ func (s *MssqlSource) readIndexes(ctx context.Context, db *sql.DB, table *schema
 }
 
 func readForeignKeys(ctx context.Context, db *sql.DB, table *schema.Table) ([]schema.ForeignKey, error) {
-	q := "select fk.name as key_name, t.name as parent_table, c.name as parent_column, rt.name as referenced_table, rc.name as referenced_column, fkc.constraint_column_id as constraint_column_id from sys.tables t, sys.tables rt, sys.columns c, sys.columns rc, sys.foreign_keys fk, sys.foreign_key_columns fkc where fk.object_id = fkc.constraint_object_id and t.object_id = fk.parent_object_id and fkc.parent_column_id = c.column_id and c.object_id = t.object_id and rt.object_id = fk.referenced_object_id and fkc.referenced_column_id = rc.column_id"
+	q := `SELECT
+	    fk.name AS key_name,
+	    t.name AS parent_table,
+	    c.name AS parent_column,
+	    rt.name AS referenced_table,
+	    rc.name AS referenced_column,
+	    fkc.constraint_column_id AS constraint_column_id
+	FROM sys.foreign_keys fk
+	JOIN sys.foreign_key_columns fkc ON fk.object_id = fkc.constraint_object_id
+	JOIN sys.tables t ON t.object_id = fk.parent_object_id AND t.object_id = fkc.parent_object_id
+	JOIN sys.columns c ON c.object_id = fkc.parent_object_id AND c.column_id = fkc.parent_column_id
+	JOIN sys.tables rt ON rt.object_id = fk.referenced_object_id AND rt.object_id = fkc.referenced_object_id
+	JOIN sys.columns rc ON rc.object_id = fkc.referenced_object_id AND rc.column_id = fkc.referenced_column_id
+	WHERE fk.is_ms_shipped = 0`
 	args := []any{}
 
 	if table != nil {
