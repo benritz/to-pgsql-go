@@ -13,7 +13,7 @@ import "strings"
   }
 
   target: {
-    url:           string & != ""
+    url:             string & != ""
     text_type?: *"text" | "text" | "citext" | "varchar" | ""
     data_batch_size?: int & >=0
   }
@@ -34,25 +34,24 @@ import "strings"
   // ---- Cross-table validations ----
   if schema != _|_ && schema.tables != _|_ {
     // Case-insensitive uniqueness of table names.
-    _#tableNameMap: { for t in schema.tables: strings.ToLower(t.name): t }
+    _#tableNameMap: { for t in schema.tables { "\(strings.ToLower(t.name))": t } }
     _#uniqueTableNames?: len(_#tableNameMap) == len(schema.tables)
 
     // Map of table->column names for FK resolution.
     _#tableColMap: {
-      for t in schema.tables: strings.ToLower(t.name): {
-        for c in t.columns: strings.ToLower(c.name): true
+      for t in schema.tables if t.columns != _|_ {
+        "\(strings.ToLower(t.name))": { for c in t.columns { "\(strings.ToLower(c.name))": true } }
       }
     }
 
     // Foreign key referenced table / column existence.
-    for t in schema.tables {
-      for fk in t.foreign_keys {
-        _#tableColMap[strings.ToLower(fk.referenced_table)]
-        for rc in fk.referenced_columns {
-          _#tableColMap[strings.ToLower(fk.referenced_table)][strings.ToLower(rc)]
-        }
+    _#fkRefCheck: [
+      for t in schema.tables if t.foreign_keys != _|_
+      for fk in t.foreign_keys
+      for rc in fk.referenced_columns {
+        _#tableColMap[strings.ToLower(fk.referenced_table)][strings.ToLower(rc)]
       }
-    }
+    ]
   }
 }
 
@@ -66,23 +65,21 @@ import "strings"
 
   // ---- Intra-table validations ----
   if columns != _|_ {
-    _#colMap: { for c in columns: strings.ToLower(c.name): true }
+    _#colMap: { for c in columns { "\(strings.ToLower(c.name))": true } }
     _#uniqueCols?: len(_#colMap) == len(columns)
   }
 
   // Index columns must exist.
   if columns != _|_ && indexes != _|_ {
-    _#colMap: { for c in columns: strings.ToLower(c.name): true }
-    for ix in indexes {
-      for c in ix.columns { _#colMap[strings.ToLower(c)] }
-      if ix.include_columns != _|_ { for c in ix.include_columns { _#colMap[strings.ToLower(c)] } }
-    }
+    _#colMap: { for c in columns { "\(strings.ToLower(c.name))": true } }
+    _#indexColsExist: [ for ix in indexes for c in ix.columns { _#colMap[strings.ToLower(c)] } ]
+    _#indexIncludeColsExist?: [ for ix in indexes if ix.include_columns != _|_ for c in ix.include_columns { _#colMap[strings.ToLower(c)] } ]
   }
 
   // Foreign key local columns must exist.
   if columns != _|_ && foreign_keys != _|_ {
-    _#colMap: { for c in columns: strings.ToLower(c.name): true }
-    for fk in foreign_keys { for c in fk.columns { _#colMap[strings.ToLower(c)] } }
+    _#colMap: { for c in columns { "\(strings.ToLower(c.name))": true } }
+    _#fkLocalColsExist: [ for fk in foreign_keys for c in fk.columns { _#colMap[strings.ToLower(c)] } ]
   }
 }
 
