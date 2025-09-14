@@ -9,11 +9,11 @@ import "strings"
 
 #Config: {
   source: {
-    url: string & != ""
+    url?: string 
   }
 
   target: {
-    url:             string & != ""
+    url?: string 
     text_type?: *"text" | "text" | "citext" | "varchar" | ""
     data_batch_size?: int & >=0
   }
@@ -86,7 +86,6 @@ import "strings"
 #Column: {
   name: string & != ""
 
-  // Column data type kind.
   kind: "bool" | "int16" | "int32" | "int64" | "serial_int32" | "serial_int64" | "float32" | "float64" | "numeric" | "money" | "uuid" | "varchar" | "text" | "binary" | "date" | "time" | "timestamp"
 
   length?:    int & >=0
@@ -99,15 +98,11 @@ import "strings"
   auto_increment?: bool
   computed?: bool
   default?: string
-  primary_key?: bool
-  unique?: bool
-
-  if primary_key == true { unique?: false }
 }
 
 #Index: {
   name: string & != ""
-  type?: *"non_unique" | "primary_key" | "unique_constraint" | "unique" | "non_unique" | ""
+  type?: *"non_unique" | "primary_key" | "unique_constraint" | "unique" | "non_unique"
   columns: [string & != "", ...string & != ""]
   include_columns?: [...string & != ""]
   filter?: string

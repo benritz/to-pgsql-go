@@ -331,9 +331,6 @@ func fromDataType(dt schema.DataType) string {
 	case schema.KindUnknown:
 		fallthrough
 	default:
-		if dt.Raw != "" {
-			return dt.Raw
-		}
 		return "varchar(max)"
 	}
 }
@@ -422,7 +419,6 @@ func getTables(ctx context.Context, db *sql.DB) ([]schema.Table, error) {
 			IsNullable: isNullable,
 			IsComputed: isComputed,
 			IsAutoInc:  isAutoInc,
-			Type:       colType,
 			Default:    defaultValue,
 			DataType:   dt,
 		})

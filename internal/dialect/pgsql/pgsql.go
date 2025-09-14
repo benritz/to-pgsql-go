@@ -627,7 +627,6 @@ ORDER BY c.relname ASC, c.oid ASC, a.attnum ASC`)
 			IsNullable: isNullable,
 			IsComputed: isGenerated,
 			IsAutoInc:  isAutoInc,
-			Type:       baseType,
 			Default:    *defaultValue,
 			DataType:   dt,
 		})
@@ -750,9 +749,6 @@ func fromDatatype(dt schema.DataType, textType string) string {
 	case schema.KindUnknown:
 		fallthrough
 	default:
-		if dt.Raw != "" {
-			return dt.Raw
-		}
 		return "text"
 	}
 }

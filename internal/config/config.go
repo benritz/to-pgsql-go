@@ -63,8 +63,6 @@ type ColumnDef struct {
 	AutoIncrement *bool  `yaml:"auto_increment"`
 	Computed      *bool  `yaml:"computed"`
 	Default       string `yaml:"default"`
-	PrimaryKey    *bool  `yaml:"primary_key"`
-	Unique        *bool  `yaml:"unique"`
 }
 
 type IndexDef struct {
@@ -102,9 +100,11 @@ func Load(r io.Reader) (*Root, error) {
 		}
 		rs = bytes.NewReader(buf)
 	}
+
 	if err := validateReader(rs); err != nil {
 		return nil, err
 	}
+
 	var cfg Root
 	dec := yaml.NewDecoder(rs)
 	dec.KnownFields(true)
@@ -112,6 +112,7 @@ func Load(r io.Reader) (*Root, error) {
 		return nil, err
 	}
 	expandEnv(&cfg)
+
 	return &cfg, nil
 }
 
@@ -124,6 +125,7 @@ func (c *Root) BuildTables(introspected map[string]schema.Table) ([]schema.Table
 	if introspected == nil {
 		introspected = map[string]schema.Table{}
 	}
+
 	out := make(map[string]schema.Table, len(introspected))
 	for _, v := range introspected {
 		out[strings.ToLower(v.Name)] = v
@@ -134,21 +136,21 @@ func (c *Root) BuildTables(introspected map[string]schema.Table) ([]schema.Table
 
 	for _, td := range c.Schema.Tables {
 		key := strings.ToLower(td.Name)
+
 		strategy := td.Strategy
 		if strategy == "" {
-			strategy = "merge"
+			strategy = "replace"
 		}
-		if strategy == "replace" {
+
+		cur, ok := out[key]
+
+		if strategy == "replace" || !ok {
 			ct, err := configTableToSchema(td)
 			if err != nil {
 				return nil, nil, nil, err
 			}
 			out[key] = ct
 		} else {
-			cur, ok := out[key]
-			if !ok {
-				cur = schema.Table{Name: td.Name}
-			}
 			merged, err := mergeTable(cur, td)
 			if err != nil {
 				return nil, nil, nil, err
@@ -163,29 +165,13 @@ func (c *Root) BuildTables(introspected map[string]schema.Table) ([]schema.Table
 			}
 			idxs = append(idxs, index)
 		}
+
 		for _, fk := range td.ForeignKeys {
 			fkObj, err := buildForeignKey(fk, td.Name)
 			if err != nil {
 				return nil, nil, nil, err
 			}
 			fks = append(fks, fkObj)
-		}
-		for _, cd := range td.Columns {
-			if cd.PrimaryKey != nil && *cd.PrimaryKey {
-				idxs = append(idxs, schema.Index{
-					Table:     td.Name,
-					Name:      fmt.Sprintf("%s_%s_pkey", td.Name, cd.Name),
-					Columns:   []string{cd.Name},
-					IndexType: schema.IndexTypePrimaryKey,
-				})
-			} else if cd.Unique != nil && *cd.Unique {
-				idxs = append(idxs, schema.Index{
-					Table:     td.Name,
-					Name:      fmt.Sprintf("%s_%s_uq", td.Name, cd.Name),
-					Columns:   []string{cd.Name},
-					IndexType: schema.IndexTypeUnique,
-				})
-			}
 		}
 	}
 
@@ -225,6 +211,7 @@ func (c *Root) BuildTables(introspected map[string]schema.Table) ([]schema.Table
 	for _, t := range out {
 		tables = append(tables, t)
 	}
+
 	return tables, idxs, fks, nil
 }
 
@@ -269,88 +256,100 @@ func buildColumn(c ColumnDef, ordinal int) (schema.Column, error) {
 	if err != nil {
 		return schema.Column{}, err
 	}
+
 	nullable := true
 	if c.Nullable != nil {
 		nullable = *c.Nullable
 	}
-	auto := false
+
+	autoIncrement := false
 	if c.AutoIncrement != nil {
-		auto = *c.AutoIncrement
+		autoIncrement = *c.AutoIncrement
 	}
-	comp := false
+
+	computed := false
 	if c.Computed != nil {
-		comp = *c.Computed
+		computed = *c.Computed
 	}
+
 	return schema.Column{
 		ColumnID:   ordinal,
 		Name:       c.Name,
+		DataType:   dt,
 		MaxLength:  intVal(c.Length),
 		Precision:  intVal(c.Precision),
 		Scale:      intVal(c.Scale),
 		IsNullable: nullable,
-		IsComputed: comp,
-		IsAutoInc:  auto,
-		Type:       c.Kind,
+		IsComputed: computed,
+		IsAutoInc:  autoIncrement,
 		Default:    c.Default,
-		DataType:   dt,
 	}, nil
 }
 
-func overrideColumn(dst *schema.Column, cdef ColumnDef) error {
-	if cdef.Kind != "" {
-		dt, err := buildDataType(cdef)
+func overrideColumn(col *schema.Column, colDef ColumnDef) error {
+	if colDef.Kind != "" {
+		dt, err := buildDataType(colDef)
 		if err != nil {
 			return err
 		}
-		dst.DataType = dt
-		dst.Type = cdef.Kind
+		col.DataType = dt
 	}
-	if cdef.Length != nil {
-		dst.MaxLength = *cdef.Length
-		dst.DataType.Length = *cdef.Length
+
+	if colDef.Length != nil {
+		col.MaxLength = *colDef.Length
+		col.DataType.Length = *colDef.Length
 	}
-	if cdef.Precision != nil {
-		dst.Precision = *cdef.Precision
-		dst.DataType.Precision = *cdef.Precision
+
+	if colDef.Precision != nil {
+		col.Precision = *colDef.Precision
+		col.DataType.Precision = *colDef.Precision
 	}
-	if cdef.Scale != nil {
-		dst.Scale = *cdef.Scale
-		dst.DataType.Scale = *cdef.Scale
+
+	if colDef.Scale != nil {
+		col.Scale = *colDef.Scale
+		col.DataType.Scale = *colDef.Scale
 	}
-	if cdef.Timezone != nil {
-		dst.DataType.Timezone = *cdef.Timezone
+
+	if colDef.Timezone != nil {
+		col.DataType.Timezone = *colDef.Timezone
 	}
-	if cdef.Nullable != nil {
-		dst.IsNullable = *cdef.Nullable
+
+	if colDef.Nullable != nil {
+		col.IsNullable = *colDef.Nullable
 	}
-	if cdef.AutoIncrement != nil {
-		dst.IsAutoInc = *cdef.AutoIncrement
+
+	if colDef.AutoIncrement != nil {
+		col.IsAutoInc = *colDef.AutoIncrement
 	}
-	if cdef.Computed != nil {
-		dst.IsComputed = *cdef.Computed
+
+	if colDef.Computed != nil {
+		col.IsComputed = *colDef.Computed
 	}
-	if cdef.Default != "" {
-		dst.Default = cdef.Default
+
+	if colDef.Default != "" {
+		col.Default = colDef.Default
 	}
+
 	return nil
 }
 
-func buildDataType(c ColumnDef) (schema.DataType, error) {
-	kind := strings.ToLower(c.Kind)
+func buildDataType(colDef ColumnDef) (schema.DataType, error) {
 	var dt schema.DataType
+
+	kind := strings.ToLower(colDef.Kind)
 	switch kind {
 	case "bool":
 		dt.Kind = schema.KindBool
 	case "int16":
 		dt.Kind = schema.KindInt16
 	case "int32":
-		if boolVal(c.AutoIncrement) {
+		if boolVal(colDef.AutoIncrement) {
 			dt.Kind = schema.KindSerialInt32
 		} else {
 			dt.Kind = schema.KindInt32
 		}
 	case "int64":
-		if boolVal(c.AutoIncrement) {
+		if boolVal(colDef.AutoIncrement) {
 			dt.Kind = schema.KindSerialInt64
 		} else {
 			dt.Kind = schema.KindInt64
@@ -381,28 +380,31 @@ func buildDataType(c ColumnDef) (schema.DataType, error) {
 		dt.Kind = schema.KindTime
 	case "timestamp":
 		dt.Kind = schema.KindTimestamp
-	case "":
-		return schema.DataType{}, fmt.Errorf("missing column kind")
 	default:
-		return schema.DataType{}, fmt.Errorf("unknown column kind: %s", c.Kind)
+		return schema.DataType{}, fmt.Errorf("unknown column kind: %s", colDef.Kind)
 	}
-	if c.Length != nil {
-		dt.Length = *c.Length
+
+	if colDef.Length != nil {
+		dt.Length = *colDef.Length
 	}
-	if c.Precision != nil {
-		dt.Precision = *c.Precision
+
+	if colDef.Precision != nil {
+		dt.Precision = *colDef.Precision
 	}
-	if c.Scale != nil {
-		dt.Scale = *c.Scale
+
+	if colDef.Scale != nil {
+		dt.Scale = *colDef.Scale
 	}
-	if c.Timezone != nil {
-		dt.Timezone = *c.Timezone
+
+	if colDef.Timezone != nil {
+		dt.Timezone = *colDef.Timezone
 	}
+
 	return dt, nil
 }
 
 func buildIndex(def IndexDef, tableName string) (schema.Index, error) {
-	it, err := parseIndexType(def.Type)
+	indexType, err := parseIndexType(def.Type)
 	if err != nil {
 		return schema.Index{}, err
 	}
@@ -412,14 +414,11 @@ func buildIndex(def IndexDef, tableName string) (schema.Index, error) {
 		Columns:        def.Columns,
 		IncludeColumns: def.IncludeColumns,
 		Filter:         def.Filter,
-		IndexType:      it,
+		IndexType:      indexType,
 	}, nil
 }
 
 func buildForeignKey(def ForeignKeyDef, tableName string) (schema.ForeignKey, error) {
-	if def.Name == "" {
-		return schema.ForeignKey{}, fmt.Errorf("foreign key missing name")
-	}
 	return schema.ForeignKey{
 		Name:              def.Name,
 		Table:             tableName,
@@ -437,7 +436,7 @@ func parseIndexType(s string) (schema.IndexType, error) {
 		return schema.IndexTypeUniqueConstraint, nil
 	case "unique":
 		return schema.IndexTypeUnique, nil
-	case "", "non_unique":
+	case "non_unique":
 		return schema.IndexTypeNonUnique, nil
 	default:
 		return "", fmt.Errorf("invalid index type: %s", s)
@@ -458,8 +457,6 @@ func boolVal(p *bool) bool {
 	return *p
 }
 
-// Options converts basic config-level fields into migrate.Options.
-// (Does not yet pass custom tables/indexes directly.)
 func (c *Root) Options() []migrate.Option {
 	return []migrate.Option{
 		migrate.WithSourceURL(c.Source.URL),

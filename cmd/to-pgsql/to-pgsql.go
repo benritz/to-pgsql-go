@@ -25,7 +25,7 @@ var (
 )
 
 func main() {
-	flag.StringVar(&configPath, "config", "", "Path to YAML config file")
+	flag.StringVar(&configPath, "config", "", "Config file")
 	flag.StringVar(&sourceUrl, "source", "", "Source database connection URL")
 	flag.StringVar(&targetUrl, "target", "", "Target file or database connection URL")
 	flag.StringVar(&textType, "textType", "citext", "How to convert the text column schema. Either text, citext or varchar (default).")
@@ -35,26 +35,20 @@ func main() {
 	flag.BoolVar(&incProcedures, "incProcedures", false, "Include procedures")
 	flag.BoolVar(&incTriggers, "incTriggers", false, "Include triggers")
 	flag.BoolVar(&incViews, "incViews", false, "Include views")
-	flag.IntVar(&dataBatchSize, "dataBatchSize", 100, "Batch size for data inserts")
+	flag.IntVar(&dataBatchSize, "dataBatchSize", 0, "Batch size for data inserts")
 	flag.Parse()
 
-	var cfg *config.Root
+	opts := []migrate.Option{}
+
 	if configPath != "" {
-		loaded, err := config.LoadFile(configPath)
+		cfg, err := config.LoadFile(configPath)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "failed to load config: %v\n", err)
 			os.Exit(1)
 		}
-
-		cfg = loaded
-	}
-
-	opts := []migrate.Option{}
-	if cfg != nil {
 		opts = append(opts, cfg.Options()...)
 	}
 
-	// CLI flags override config if explicitly provided (non-zero for strings/bools)
 	if sourceUrl != "" {
 		opts = append(opts, migrate.WithSourceURL(sourceUrl))
 	}

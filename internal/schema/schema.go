@@ -35,15 +35,14 @@ type DataType struct {
 type Column struct {
 	ColumnID   int
 	Name       string
+	DataType   DataType
 	MaxLength  int
 	Precision  int
 	Scale      int
 	IsNullable bool
 	IsComputed bool
 	IsAutoInc  bool
-	Type       string
 	Default    string
-	DataType   DataType
 }
 
 type Table struct {
