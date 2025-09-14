@@ -21,6 +21,7 @@ const (
 	KindDate        DataTypeKind = "date"
 	KindTime        DataTypeKind = "time"
 	KindTimestamp   DataTypeKind = "timestamp"
+	KindJson        DataTypeKind = "json"
 )
 
 type DataType struct {

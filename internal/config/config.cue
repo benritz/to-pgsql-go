@@ -81,7 +81,7 @@ import "strings"
 #Column: {
   name: string & != ""
 
-  kind: "bool" | "int16" | "int32" | "int64" | "serial_int32" | "serial_int64" | "float32" | "float64" | "numeric" | "money" | "uuid" | "varchar" | "text" | "binary" | "date" | "time" | "timestamp"
+  kind: "bool" | "int16" | "int32" | "int64" | "serial_int32" | "serial_int64" | "float32" | "float64" | "numeric" | "money" | "uuid" | "varchar" | "text" | "binary" | "date" | "time" | "timestamp" | "json"
 
   length?:    int & >=0
   precision?: int & >=0

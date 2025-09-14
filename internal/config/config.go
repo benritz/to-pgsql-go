@@ -380,6 +380,8 @@ func buildDataType(colDef ColumnDef) (schema.DataType, error) {
 		dt.Kind = schema.KindTime
 	case "timestamp":
 		dt.Kind = schema.KindTimestamp
+	case "json":
+		dt.Kind = schema.KindJson
 	default:
 		return schema.DataType{}, fmt.Errorf("unknown column kind: %s", colDef.Kind)
 	}
