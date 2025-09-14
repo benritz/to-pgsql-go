@@ -119,6 +119,9 @@ func (t *PgsqlTarget) CreateConstraintsAndIndexes(ctx context.Context, tables []
 				return err
 			}
 		}
+	}
+
+	for _, table := range tables {
 		if len(table.ForeignKeyes) > 0 {
 			if err := t.CreateForeignKeys(ctx, table.ForeignKeyes); err != nil {
 				return err
@@ -711,6 +714,8 @@ func toDataType(baseType string, maxLength, precision, scale int, isAutoInc bool
 	case "timestamptz", "timestamp with time zone":
 		dt.Kind = schema.KindTimestamp
 		dt.Timezone = true
+	case "json", "jsonb":
+		dt.Kind = schema.KindJson
 	}
 	return dt
 }
@@ -769,6 +774,8 @@ func fromDatatype(dt schema.DataType, textType string) string {
 			return "timestamptz"
 		}
 		return "timestamp"
+	case schema.KindJson:
+		return "jsonb"
 	case schema.KindUnknown:
 		fallthrough
 	default:

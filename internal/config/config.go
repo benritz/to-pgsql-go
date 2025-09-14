@@ -120,17 +120,17 @@ func expandEnv(cfg *Root) {
 	cfg.Target.URL = os.ExpandEnv(cfg.Target.URL)
 }
 
-func (c *Root) BuildTables(introspected map[string]*schema.Table) ([]*schema.Table, error) {
-	if introspected == nil {
-		introspected = map[string]*schema.Table{}
+func BuildTables(tableDefs []TableDef, tablesMap map[string]*schema.Table) (map[string]*schema.Table, error) {
+	if tablesMap == nil {
+		tablesMap = map[string]*schema.Table{}
 	}
 
-	out := make(map[string]*schema.Table, len(introspected))
-	for _, v := range introspected {
+	out := make(map[string]*schema.Table, len(tablesMap))
+	for _, v := range tablesMap {
 		out[strings.ToLower(v.Name)] = v
 	}
 
-	for _, td := range c.Schema.Tables {
+	for _, td := range tableDefs {
 		key := strings.ToLower(td.Name)
 
 		strategy := td.Strategy
@@ -170,12 +170,7 @@ func (c *Root) BuildTables(introspected map[string]*schema.Table) ([]*schema.Tab
 		}
 	}
 
-	var tables []*schema.Table
-	for _, t := range out {
-		tables = append(tables, t)
-	}
-
-	return tables, nil
+	return out, nil
 }
 
 func configTableToSchema(td TableDef) (*schema.Table, error) {

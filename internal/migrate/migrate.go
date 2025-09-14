@@ -140,6 +140,12 @@ func (m Migration) Run(ctx context.Context) error {
 			return err
 		}
 
+		if len(m.tableDefs) > 0 {
+			if tablesMap, err = config.BuildTables(m.tableDefs, tablesMap); err != nil {
+				return err
+			}
+		}
+
 		tables := values(tablesMap)
 		sort.Slice(tables, func(i, j int) bool {
 			return strings.ToLower(tables[i].Name) < strings.ToLower(tables[j].Name)
