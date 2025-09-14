@@ -6,6 +6,7 @@ import (
 	"sort"
 	"strings"
 
+	"benritz/topgsql/internal/config"
 	"benritz/topgsql/internal/dialect/mssql"
 	"benritz/topgsql/internal/dialect/pgsql"
 )
@@ -21,6 +22,7 @@ type Migration struct {
 	includeViews  bool
 	textType      string
 	dataBatchSize int
+	tableDefs     []config.TableDef
 }
 
 type Option func(*Migration)
@@ -53,36 +55,43 @@ func WithSourceURL(u string) Option {
 		m.sourceURL = u
 	}
 }
+
 func WithTargetURL(u string) Option {
 	return func(m *Migration) {
 		m.targetURL = u
 	}
 }
+
 func WithIncludeData(v bool) Option {
 	return func(m *Migration) {
 		m.includeData = v
 	}
 }
+
 func WithIncludeTables(v bool) Option {
 	return func(m *Migration) {
 		m.includeTables = v
 	}
 }
+
 func WithIncludeFuncs(v bool) Option {
 	return func(m *Migration) {
 		m.includeFuncs = v
 	}
 }
+
 func WithIncludeTrigs(v bool) Option {
 	return func(m *Migration) {
 		m.includeTrigs = v
 	}
 }
+
 func WithIncludeProcs(v bool) Option {
 	return func(m *Migration) {
 		m.includeProcs = v
 	}
 }
+
 func WithIncludeViews(v bool) Option {
 	return func(m *Migration) {
 		m.includeViews = v
@@ -98,6 +107,12 @@ func WithTextType(t string) Option {
 func WithDataBatchSize(size int) Option {
 	return func(m *Migration) {
 		m.dataBatchSize = size
+	}
+}
+
+func WithTableDefs(tableDefs []config.TableDef) Option {
+	return func(m *Migration) {
+		m.tableDefs = tableDefs
 	}
 }
 

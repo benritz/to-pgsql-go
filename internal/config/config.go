@@ -7,7 +7,6 @@ import (
 	"os"
 	"strings"
 
-	"benritz/topgsql/internal/migrate"
 	"benritz/topgsql/internal/schema"
 
 	"gopkg.in/yaml.v3"
@@ -420,19 +419,4 @@ func boolVal(p *bool) bool {
 		return false
 	}
 	return *p
-}
-
-func (c *Root) Options() []migrate.Option {
-	return []migrate.Option{
-		migrate.WithSourceURL(c.Source.URL),
-		migrate.WithTargetURL(c.Target.URL),
-		migrate.WithIncludeData(c.Include.Data),
-		migrate.WithIncludeTables(c.Include.Tables),
-		migrate.WithIncludeFuncs(c.Include.Functions),
-		migrate.WithIncludeTrigs(c.Include.Triggers),
-		migrate.WithIncludeProcs(c.Include.Procedures),
-		migrate.WithIncludeViews(c.Include.Views),
-		migrate.WithTextType(c.Target.TextType),
-		migrate.WithDataBatchSize(c.Target.DataBatchSize),
-	}
 }

@@ -24,6 +24,22 @@ var (
 	dataBatchSize int
 )
 
+func configOptions(c *config.Root) []migrate.Option {
+	return []migrate.Option{
+		migrate.WithSourceURL(c.Source.URL),
+		migrate.WithTargetURL(c.Target.URL),
+		migrate.WithIncludeData(c.Include.Data),
+		migrate.WithIncludeTables(c.Include.Tables),
+		migrate.WithIncludeFuncs(c.Include.Functions),
+		migrate.WithIncludeTrigs(c.Include.Triggers),
+		migrate.WithIncludeProcs(c.Include.Procedures),
+		migrate.WithIncludeViews(c.Include.Views),
+		migrate.WithTextType(c.Target.TextType),
+		migrate.WithDataBatchSize(c.Target.DataBatchSize),
+		migrate.WithTableDefs(c.Schema.Tables),
+	}
+}
+
 func main() {
 	flag.StringVar(&configPath, "config", "", "Config file")
 	flag.StringVar(&sourceUrl, "source", "", "Source database connection URL")
@@ -46,7 +62,8 @@ func main() {
 			fmt.Fprintf(os.Stderr, "failed to load config: %v\n", err)
 			os.Exit(1)
 		}
-		opts = append(opts, cfg.Options()...)
+
+		opts = append(opts, configOptions(cfg)...)
 	}
 
 	if sourceUrl != "" {

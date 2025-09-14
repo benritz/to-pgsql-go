@@ -487,6 +487,7 @@ func (t *PgsqlTarget) createIndex(ctx context.Context, index *schema.Index) erro
 
 	return nil
 }
+
 func (t *PgsqlTarget) writeForeignKeys(keys []*schema.ForeignKey) error {
 	for _, key := range keys {
 		if err := t.writeForeignKey(key); err != nil {
