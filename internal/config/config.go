@@ -121,18 +121,15 @@ func expandEnv(cfg *Root) {
 	cfg.Target.URL = os.ExpandEnv(cfg.Target.URL)
 }
 
-func (c *Root) BuildTables(introspected map[string]schema.Table) ([]schema.Table, []schema.Index, []schema.ForeignKey, error) {
+func (c *Root) BuildTables(introspected map[string]*schema.Table) ([]*schema.Table, error) {
 	if introspected == nil {
-		introspected = map[string]schema.Table{}
+		introspected = map[string]*schema.Table{}
 	}
 
-	out := make(map[string]schema.Table, len(introspected))
+	out := make(map[string]*schema.Table, len(introspected))
 	for _, v := range introspected {
 		out[strings.ToLower(v.Name)] = v
 	}
-
-	var idxs []schema.Index
-	var fks []schema.ForeignKey
 
 	for _, td := range c.Schema.Tables {
 		key := strings.ToLower(td.Name)
@@ -144,90 +141,57 @@ func (c *Root) BuildTables(introspected map[string]schema.Table) ([]schema.Table
 
 		cur, ok := out[key]
 
+		var table *schema.Table
+		var err error
+
 		if strategy == "replace" || !ok {
-			ct, err := configTableToSchema(td)
-			if err != nil {
-				return nil, nil, nil, err
-			}
-			out[key] = ct
+			table, err = configTableToSchema(td)
 		} else {
-			merged, err := mergeTable(cur, td)
-			if err != nil {
-				return nil, nil, nil, err
-			}
-			out[key] = merged
+			table, err = mergeTable(cur, &td)
 		}
+		if err != nil {
+			return nil, err
+		}
+		out[key] = table
 
 		for _, id := range td.Indexes {
 			index, err := buildIndex(id, td.Name)
 			if err != nil {
-				return nil, nil, nil, err
+				return nil, err
 			}
-			idxs = append(idxs, index)
+			table.Indexes = append(table.Indexes, index)
 		}
 
-		for _, fk := range td.ForeignKeys {
-			fkObj, err := buildForeignKey(fk, td.Name)
+		for _, fkd := range td.ForeignKeys {
+			fk, err := buildForeignKey(fkd, td.Name)
 			if err != nil {
-				return nil, nil, nil, err
+				return nil, err
 			}
-			fks = append(fks, fkObj)
+			table.ForeignKeyes = append(table.ForeignKeyes, fk)
 		}
 	}
 
-	// Validate index & FK column existence
-	for _, ix := range idxs {
-		tbl, ok := out[strings.ToLower(ix.Table)]
-		if !ok {
-			return nil, nil, nil, fmt.Errorf("index %s references missing table %s", ix.Name, ix.Table)
-		}
-		colset := map[string]struct{}{}
-		for _, c := range tbl.Columns {
-			colset[strings.ToLower(c.Name)] = struct{}{}
-		}
-		for _, c := range append(ix.Columns, ix.IncludeColumns...) {
-			if _, ok := colset[strings.ToLower(c)]; !ok {
-				return nil, nil, nil, fmt.Errorf("index %s column %s not in table %s", ix.Name, c, ix.Table)
-			}
-		}
-	}
-	for _, fk := range fks {
-		tbl, ok := out[strings.ToLower(fk.Table)]
-		if !ok {
-			return nil, nil, nil, fmt.Errorf("foreign key %s missing table %s", fk.Name, fk.Table)
-		}
-		colset := map[string]struct{}{}
-		for _, c := range tbl.Columns {
-			colset[strings.ToLower(c.Name)] = struct{}{}
-		}
-		for _, c := range fk.Columns {
-			if _, ok := colset[strings.ToLower(c)]; !ok {
-				return nil, nil, nil, fmt.Errorf("foreign key %s column %s not in table %s", fk.Name, c, fk.Table)
-			}
-		}
-	}
-
-	var tables []schema.Table
+	var tables []*schema.Table
 	for _, t := range out {
 		tables = append(tables, t)
 	}
 
-	return tables, idxs, fks, nil
+	return tables, nil
 }
 
-func configTableToSchema(td TableDef) (schema.Table, error) {
-	cols := make([]schema.Column, 0, len(td.Columns))
+func configTableToSchema(td TableDef) (*schema.Table, error) {
+	cols := make([]*schema.Column, 0, len(td.Columns))
 	for i, c := range td.Columns {
 		col, err := buildColumn(c, i+1)
 		if err != nil {
-			return schema.Table{}, err
+			return nil, err
 		}
 		cols = append(cols, col)
 	}
-	return schema.Table{Name: td.Name, Columns: cols}, nil
+	return &schema.Table{Name: td.Name, Columns: cols}, nil
 }
 
-func mergeTable(base schema.Table, td TableDef) (schema.Table, error) {
+func mergeTable(base *schema.Table, td *TableDef) (*schema.Table, error) {
 	idxMap := map[string]int{}
 	for i, c := range base.Columns {
 		idxMap[strings.ToLower(c.Name)] = i
@@ -236,10 +200,9 @@ func mergeTable(base schema.Table, td TableDef) (schema.Table, error) {
 		key := strings.ToLower(cdef.Name)
 		if i, ok := idxMap[key]; ok {
 			col := base.Columns[i]
-			if err := overrideColumn(&col, cdef); err != nil {
+			if err := overrideColumn(col, cdef); err != nil {
 				return base, err
 			}
-			base.Columns[i] = col
 		} else {
 			col, err := buildColumn(cdef, len(base.Columns)+1)
 			if err != nil {
@@ -251,10 +214,10 @@ func mergeTable(base schema.Table, td TableDef) (schema.Table, error) {
 	return base, nil
 }
 
-func buildColumn(c ColumnDef, ordinal int) (schema.Column, error) {
+func buildColumn(c ColumnDef, ordinal int) (*schema.Column, error) {
 	dt, err := buildDataType(c)
 	if err != nil {
-		return schema.Column{}, err
+		return nil, err
 	}
 
 	nullable := true
@@ -272,7 +235,7 @@ func buildColumn(c ColumnDef, ordinal int) (schema.Column, error) {
 		computed = *c.Computed
 	}
 
-	return schema.Column{
+	return &schema.Column{
 		ColumnID:   ordinal,
 		Name:       c.Name,
 		DataType:   dt,
@@ -405,12 +368,12 @@ func buildDataType(colDef ColumnDef) (schema.DataType, error) {
 	return dt, nil
 }
 
-func buildIndex(def IndexDef, tableName string) (schema.Index, error) {
+func buildIndex(def IndexDef, tableName string) (*schema.Index, error) {
 	indexType, err := parseIndexType(def.Type)
 	if err != nil {
-		return schema.Index{}, err
+		return nil, err
 	}
-	return schema.Index{
+	return &schema.Index{
 		Table:          tableName,
 		Name:           def.Name,
 		Columns:        def.Columns,
@@ -420,8 +383,8 @@ func buildIndex(def IndexDef, tableName string) (schema.Index, error) {
 	}, nil
 }
 
-func buildForeignKey(def ForeignKeyDef, tableName string) (schema.ForeignKey, error) {
-	return schema.ForeignKey{
+func buildForeignKey(def ForeignKeyDef, tableName string) (*schema.ForeignKey, error) {
+	return &schema.ForeignKey{
 		Name:              def.Name,
 		Table:             tableName,
 		Columns:           def.Columns,

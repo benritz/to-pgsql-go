@@ -143,20 +143,8 @@ func (m Migration) Run(ctx context.Context) error {
 		}
 
 		if m.includeTables {
-			indexes, err := source.GetIndexes(ctx)
-			if err != nil {
-				return err
-			}
-			if err := target.CreateIndexes(ctx, indexes); err != nil {
-				return err
-			}
-
-			foreignKeys, err := source.GetForeignKeys(ctx)
-			if err != nil {
-				return err
-			}
-			if err := target.CreateForeignKeys(ctx, foreignKeys); err != nil {
-				return err
+			if err := target.CreateConstraintsAndIndexes(ctx, tables); err != nil {
+				return fmt.Errorf("failed to create constraints and indexes: %w", err)
 			}
 		}
 	}

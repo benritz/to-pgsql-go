@@ -7,7 +7,7 @@ import (
 )
 
 type TableDataReader interface {
-	Open(ctx context.Context, table string, cols []schema.Column) error
+	Open(ctx context.Context, table string, cols []*schema.Column) error
 	ReadRow() ([]any, error)
 	Close(ctx context.Context) error
 }

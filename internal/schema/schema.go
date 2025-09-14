@@ -47,14 +47,16 @@ type Column struct {
 }
 
 type Table struct {
-	Name    string
-	Columns []Column
+	Name         string
+	Columns      []*Column
+	Indexes      []*Index
+	ForeignKeyes []*ForeignKey
 }
 
 func (t *Table) GetColumn(name string) *Column {
 	for i, col := range t.Columns {
 		if col.Name == name {
-			return &t.Columns[i]
+			return t.Columns[i]
 		}
 	}
 	return nil
@@ -86,8 +88,8 @@ type ForeignKey struct {
 	ReferencedColumns []string
 }
 
-func UpdateableColumns(table Table) []Column {
-	cols := []Column{}
+func UpdateableColumns(table *Table) []*Column {
+	cols := []*Column{}
 	for _, col := range table.Columns {
 		if !col.IsComputed {
 			cols = append(cols, col)

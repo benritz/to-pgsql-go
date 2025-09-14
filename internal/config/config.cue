@@ -25,29 +25,6 @@ import "strings"
   schema?: {
     tables?: [...#Table]
   }
-
-  // ---- Cross-table validations ----
-  if schema != _|_ && schema.tables != _|_ {
-    // Case-insensitive uniqueness of table names.
-    _#tableNameMap: { for t in schema.tables { "\(strings.ToLower(t.name))": t } }
-    _#uniqueTableNames?: len(_#tableNameMap) == len(schema.tables)
-
-    // Map of table->column names for FK resolution.
-    _#tableColMap: {
-      for t in schema.tables if t.columns != _|_ {
-        "\(strings.ToLower(t.name))": { for c in t.columns { "\(strings.ToLower(c.name))": true } }
-      }
-    }
-
-    // Foreign key referenced table / column existence.
-    _#fkRefCheck: [
-      for t in schema.tables if t.foreign_keys != _|_
-      for fk in t.foreign_keys
-      for rc in fk.referenced_columns {
-        _#tableColMap[strings.ToLower(fk.referenced_table)][strings.ToLower(rc)]
-      }
-    ]
-  }
 }
 
 #Table: {

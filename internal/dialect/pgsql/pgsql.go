@@ -17,7 +17,7 @@ type PgsqlTarget struct {
 	conn       *pgx.Conn
 	out        *os.File
 	textType   string // "", "text" or "citext"
-	tableCache map[string]schema.Table
+	tableCache map[string]*schema.Table
 }
 
 func NewPgsqlTarget(ctx context.Context, targetUrl, textType string) (*PgsqlTarget, error) {
@@ -72,7 +72,7 @@ func (t *PgsqlTarget) Close(ctx context.Context) {
 	}
 }
 
-func (t *PgsqlTarget) GetTables(ctx context.Context) (map[string]schema.Table, error) {
+func (t *PgsqlTarget) GetTables(ctx context.Context) (map[string]*schema.Table, error) {
 	if t.tableCache != nil {
 		return t.tableCache, nil
 	}
@@ -82,7 +82,7 @@ func (t *PgsqlTarget) GetTables(ctx context.Context) (map[string]schema.Table, e
 		return nil, err
 	}
 
-	t.tableCache = make(map[string]schema.Table, len(tables))
+	t.tableCache = make(map[string]*schema.Table, len(tables))
 	for _, table := range tables {
 		t.tableCache[translateIdentifier(table.Name)] = table
 	}
@@ -90,7 +90,7 @@ func (t *PgsqlTarget) GetTables(ctx context.Context) (map[string]schema.Table, e
 	return t.tableCache, nil
 }
 
-func (t *PgsqlTarget) CreateTables(ctx context.Context, tables []schema.Table) error {
+func (t *PgsqlTarget) CreateTables(ctx context.Context, tables []*schema.Table) error {
 	if t.out != nil {
 		if err := t.writeTablesSchema(tables); err != nil {
 			return err
@@ -108,7 +108,32 @@ func (t *PgsqlTarget) CreateTables(ctx context.Context, tables []schema.Table) e
 	return nil
 }
 
-func (t *PgsqlTarget) CreateIndexes(ctx context.Context, indexes []schema.Index) error {
+func (t *PgsqlTarget) CreateConstraintsAndIndexes(ctx context.Context, tables []*schema.Table) error {
+	if t.out != nil {
+		fmt.Fprintf(t.out, "/* --------------------- CONSTRAINTS + INDEXES --------------------- */\n\n")
+	}
+
+	for _, table := range tables {
+		if len(table.Indexes) > 0 {
+			if err := t.CreateIndexes(ctx, table.Indexes); err != nil {
+				return err
+			}
+		}
+		if len(table.ForeignKeyes) > 0 {
+			if err := t.CreateForeignKeys(ctx, table.ForeignKeyes); err != nil {
+				return err
+			}
+		}
+	}
+
+	if t.out != nil {
+		fmt.Fprint(t.out, "\n\n")
+	}
+
+	return nil
+}
+
+func (t *PgsqlTarget) CreateIndexes(ctx context.Context, indexes []*schema.Index) error {
 	if t.out != nil {
 		if err := t.writeIndexes(indexes); err != nil {
 			return err
@@ -126,7 +151,7 @@ func (t *PgsqlTarget) CreateIndexes(ctx context.Context, indexes []schema.Index)
 	return nil
 }
 
-func (t *PgsqlTarget) CreateForeignKeys(ctx context.Context, keys []schema.ForeignKey) error {
+func (t *PgsqlTarget) CreateForeignKeys(ctx context.Context, keys []*schema.ForeignKey) error {
 	if t.out != nil {
 		if err := t.writeForeignKeys(keys); err != nil {
 			return err
@@ -143,9 +168,9 @@ func (t *PgsqlTarget) CreateForeignKeys(ctx context.Context, keys []schema.Forei
 	return nil
 }
 
-func (t *PgsqlTarget) CopyTables(ctx context.Context, table []schema.Table, reader dialect.TableDataReader) error {
+func (t *PgsqlTarget) CopyTables(ctx context.Context, tables []*schema.Table, reader dialect.TableDataReader) error {
 	if t.out != nil {
-		for _, table := range table {
+		for _, table := range tables {
 			if err := t.writeTableData(ctx, table, reader); err != nil {
 				return err
 			}
@@ -160,7 +185,7 @@ func (t *PgsqlTarget) CopyTables(ctx context.Context, table []schema.Table, read
 		}
 		defer setReplicationOff(ctx, t.conn)
 
-		for _, table := range table {
+		for _, table := range tables {
 			if err := t.copyTableData(ctx, table, reader); err != nil {
 				return fmt.Errorf("Copy data failed for %s: %v", table.Name, err)
 			}
@@ -174,7 +199,7 @@ func (t *PgsqlTarget) CopyTables(ctx context.Context, table []schema.Table, read
 	return nil
 }
 
-func (t *PgsqlTarget) writeTableData(ctx context.Context, table schema.Table, reader dialect.TableDataReader) error {
+func (t *PgsqlTarget) writeTableData(ctx context.Context, table *schema.Table, reader dialect.TableDataReader) error {
 	if err := reader.Open(ctx, table.Name, table.Columns); err != nil {
 		return err
 	}
@@ -265,7 +290,7 @@ func (t *PgsqlTarget) writeSeqReset() {
 	)
 }
 
-func (t *PgsqlTarget) copyTableData(ctx context.Context, table schema.Table, reader dialect.TableDataReader) error {
+func (t *PgsqlTarget) copyTableData(ctx context.Context, table *schema.Table, reader dialect.TableDataReader) error {
 	tablesMap, err := t.GetTables(ctx)
 	if err != nil {
 		return err
@@ -368,7 +393,7 @@ func (t *PgsqlTarget) execSeqReset(ctx context.Context) error {
 	return nil
 }
 
-func (t *PgsqlTarget) writeTablesSchema(tables []schema.Table) error {
+func (t *PgsqlTarget) writeTablesSchema(tables []*schema.Table) error {
 	fmt.Fprintf(t.out, "/* --------------------- TABLES --------------------- */\n\n")
 
 	if t.textType == "citext" {
@@ -386,7 +411,7 @@ func (t *PgsqlTarget) writeTablesSchema(tables []schema.Table) error {
 	return nil
 }
 
-func (t *PgsqlTarget) writeTableSchema(table schema.Table) error {
+func (t *PgsqlTarget) writeTableSchema(table *schema.Table) error {
 	drop := DropTableStatement(table)
 	create := CreateTableStatement(table, t.textType)
 
@@ -401,7 +426,7 @@ func (t *PgsqlTarget) writeTableSchema(table schema.Table) error {
 	return nil
 }
 
-func (t *PgsqlTarget) createTablesSchema(ctx context.Context, tables []schema.Table) error {
+func (t *PgsqlTarget) createTablesSchema(ctx context.Context, tables []*schema.Table) error {
 	if _, err := t.conn.Exec(ctx, "create extension if not exists citext;\n\n"); err != nil {
 		return err
 	}
@@ -415,7 +440,7 @@ func (t *PgsqlTarget) createTablesSchema(ctx context.Context, tables []schema.Ta
 	return nil
 }
 
-func (t *PgsqlTarget) createTableSchema(ctx context.Context, table schema.Table) error {
+func (t *PgsqlTarget) createTableSchema(ctx context.Context, table *schema.Table) error {
 	sql := CreateTableStatement(table, t.textType)
 	_, err := t.conn.Exec(ctx, sql)
 	if err != nil {
@@ -424,28 +449,26 @@ func (t *PgsqlTarget) createTableSchema(ctx context.Context, table schema.Table)
 	return nil
 }
 
-func (t *PgsqlTarget) writeIndexes(indexes []schema.Index) error {
-	fmt.Fprintf(t.out, "/* --------------------- INDEXES --------------------- */\n\n")
-
+func (t *PgsqlTarget) writeIndexes(indexes []*schema.Index) error {
 	for _, index := range indexes {
 		if err := t.writeIndex(index); err != nil {
 			return err
 		}
 	}
 
-	fmt.Fprint(t.out, "\n\n")
+	fmt.Fprint(t.out, "\n")
 
 	return nil
 }
 
-func (t *PgsqlTarget) writeIndex(index schema.Index) error {
+func (t *PgsqlTarget) writeIndex(index *schema.Index) error {
 	create := CreateIndexStatement(index)
 	fmt.Fprint(t.out, create)
 
 	return nil
 }
 
-func (t *PgsqlTarget) createIndexes(ctx context.Context, indexes []schema.Index) error {
+func (t *PgsqlTarget) createIndexes(ctx context.Context, indexes []*schema.Index) error {
 	for _, index := range indexes {
 		if err := t.createIndex(ctx, index); err != nil {
 			return err
@@ -455,7 +478,7 @@ func (t *PgsqlTarget) createIndexes(ctx context.Context, indexes []schema.Index)
 	return nil
 }
 
-func (t *PgsqlTarget) createIndex(ctx context.Context, index schema.Index) error {
+func (t *PgsqlTarget) createIndex(ctx context.Context, index *schema.Index) error {
 	sql := CreateIndexStatement(index)
 	_, err := t.conn.Exec(ctx, sql)
 	if err != nil {
@@ -464,28 +487,26 @@ func (t *PgsqlTarget) createIndex(ctx context.Context, index schema.Index) error
 
 	return nil
 }
-func (t *PgsqlTarget) writeForeignKeys(keys []schema.ForeignKey) error {
-	fmt.Fprintf(t.out, "/* --------------------- FOREIGN KEYS --------------------- */\n\n")
-
+func (t *PgsqlTarget) writeForeignKeys(keys []*schema.ForeignKey) error {
 	for _, key := range keys {
 		if err := t.writeForeignKey(key); err != nil {
 			return err
 		}
 	}
 
-	fmt.Fprint(t.out, "\n\n")
+	fmt.Fprint(t.out, "\n")
 
 	return nil
 }
 
-func (t *PgsqlTarget) writeForeignKey(key schema.ForeignKey) error {
+func (t *PgsqlTarget) writeForeignKey(key *schema.ForeignKey) error {
 	create := CreateForeignKeyStatement(key)
 	fmt.Fprint(t.out, create)
 
 	return nil
 }
 
-func (t *PgsqlTarget) createForeignKeys(ctx context.Context, keys []schema.ForeignKey) error {
+func (t *PgsqlTarget) createForeignKeys(ctx context.Context, keys []*schema.ForeignKey) error {
 	for _, key := range keys {
 		if err := t.createForeignKey(ctx, key); err != nil {
 			return err
@@ -495,7 +516,7 @@ func (t *PgsqlTarget) createForeignKeys(ctx context.Context, keys []schema.Forei
 	return nil
 }
 
-func (t *PgsqlTarget) createForeignKey(ctx context.Context, key schema.ForeignKey) error {
+func (t *PgsqlTarget) createForeignKey(ctx context.Context, key *schema.ForeignKey) error {
 	sql := CreateForeignKeyStatement(key)
 	_, err := t.conn.Exec(ctx, sql)
 	if err != nil {
@@ -527,7 +548,7 @@ func setReplicationOff(ctx context.Context, conn *pgx.Conn) error {
 	return err
 }
 
-func getTables(ctx context.Context, conn *pgx.Conn) ([]schema.Table, error) {
+func getTables(ctx context.Context, conn *pgx.Conn) ([]*schema.Table, error) {
 	rows, err := conn.Query(ctx, `
 SELECT
     c.relname AS table_name,
@@ -554,9 +575,9 @@ ORDER BY c.relname ASC, c.oid ASC, a.attnum ASC`)
 	}
 	defer rows.Close()
 
-	tables := []schema.Table{}
+	tables := []*schema.Table{}
 	var lastTable string
-	var columns []schema.Column
+	var columns []*schema.Column
 
 	for rows.Next() {
 		var (
@@ -584,10 +605,10 @@ ORDER BY c.relname ASC, c.oid ASC, a.attnum ASC`)
 
 		if columnID == 1 {
 			if lastTable != "" {
-				tables = append(tables, schema.Table{Name: lastTable, Columns: columns})
+				tables = append(tables, &schema.Table{Name: lastTable, Columns: columns})
 			}
 			lastTable = tableName
-			columns = []schema.Column{}
+			columns = []*schema.Column{}
 		}
 
 		maxLength := 0
@@ -618,7 +639,7 @@ ORDER BY c.relname ASC, c.oid ASC, a.attnum ASC`)
 
 		dt := toDataType(baseType, maxLength, precision, scale, isAutoInc)
 
-		columns = append(columns, schema.Column{
+		columns = append(columns, &schema.Column{
 			ColumnID:   columnID,
 			Name:       columnName,
 			MaxLength:  maxLength,
@@ -633,11 +654,12 @@ ORDER BY c.relname ASC, c.oid ASC, a.attnum ASC`)
 	}
 
 	if lastTable != "" {
-		tables = append(tables, schema.Table{Name: lastTable, Columns: columns})
+		tables = append(tables, &schema.Table{Name: lastTable, Columns: columns})
 	}
 
 	return tables, nil
 }
+
 func toDataType(baseType string, maxLength, precision, scale int, isAutoInc bool) schema.DataType {
 	raw := strings.ToLower(baseType)
 	dt := schema.DataType{Kind: schema.KindUnknown, Raw: raw}
@@ -753,11 +775,11 @@ func fromDatatype(dt schema.DataType, textType string) string {
 	}
 }
 
-func DropTableStatement(table schema.Table) string {
+func DropTableStatement(table *schema.Table) string {
 	return fmt.Sprintf("drop table if exists %s;", table.Name)
 }
 
-func CreateTableStatement(table schema.Table, textType string) string {
+func CreateTableStatement(table *schema.Table, textType string) string {
 	columnDefs := ""
 
 	for i, column := range table.Columns {
@@ -794,7 +816,7 @@ func translateMarkers(s string) string {
 	return s
 }
 
-func CreateIndexStatement(index schema.Index) string {
+func CreateIndexStatement(index *schema.Index) string {
 	cols := strings.Join(index.Columns, ", ")
 	include := ""
 	if len(index.IncludeColumns) > 0 {
@@ -818,7 +840,7 @@ func CreateIndexStatement(index schema.Index) string {
 	}
 }
 
-func CreateForeignKeyStatement(key schema.ForeignKey) string {
+func CreateForeignKeyStatement(key *schema.ForeignKey) string {
 	parentCols := strings.Join(key.Columns, ", ")
 	refCols := strings.Join(key.ReferencedColumns, ", ")
 	return fmt.Sprintf(

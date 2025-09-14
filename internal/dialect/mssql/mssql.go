@@ -12,14 +12,12 @@ import (
 )
 
 type MssqlSource struct {
-	db              *sql.DB
-	tableCache      map[string]schema.Table
-	indexCache      []schema.Index
-	foreignKeyCache []schema.ForeignKey
-	functionCache   []schema.Function
-	procedureCache  []schema.Procedure
-	viewCache       []schema.View
-	triggerCache    []schema.Trigger
+	db             *sql.DB
+	tableCache     map[string]*schema.Table
+	functionCache  []schema.Function
+	procedureCache []schema.Procedure
+	viewCache      []schema.View
+	triggerCache   []schema.Trigger
 }
 
 func NewMssqlSource(connectionUrl string) (*MssqlSource, error) {
@@ -39,7 +37,7 @@ func (s *MssqlSource) Close() {
 	s.db.Close()
 }
 
-func (s *MssqlSource) GetTables(ctx context.Context) (map[string]schema.Table, error) {
+func (s *MssqlSource) GetTables(ctx context.Context) (map[string]*schema.Table, error) {
 	if s.tableCache != nil {
 		return s.tableCache, nil
 	}
@@ -49,9 +47,29 @@ func (s *MssqlSource) GetTables(ctx context.Context) (map[string]schema.Table, e
 		return nil, err
 	}
 
-	s.tableCache = make(map[string]schema.Table, len(tables))
+	s.tableCache = make(map[string]*schema.Table, len(tables))
 	for _, table := range tables {
 		s.tableCache[strings.ToLower(table.Name)] = table
+	}
+
+	indexes, err := s.readIndexes(ctx, s.db, nil)
+	if err != nil {
+		return nil, err
+	}
+	for _, index := range indexes {
+		if table, ok := s.tableCache[strings.ToLower(index.Table)]; ok {
+			table.Indexes = append(table.Indexes, index)
+		}
+	}
+
+	keys, err := readForeignKeys(ctx, s.db, nil)
+	if err != nil {
+		return nil, err
+	}
+	for _, key := range keys {
+		if table, ok := s.tableCache[strings.ToLower(key.Table)]; ok {
+			table.ForeignKeyes = append(table.ForeignKeyes, key)
+		}
 	}
 
 	return s.tableCache, nil
@@ -63,39 +81,9 @@ func (s *MssqlSource) GetTable(ctx context.Context, name string) (*schema.Table,
 		return nil, err
 	}
 	if t, ok := tablesMap[strings.ToLower(name)]; ok {
-		return &t, nil
+		return t, nil
 	}
 	return nil, nil
-}
-
-func (s *MssqlSource) GetIndexes(ctx context.Context) ([]schema.Index, error) {
-	if s.indexCache != nil {
-		return s.indexCache, nil
-	}
-
-	indexes, err := s.readIndexes(ctx, s.db, nil)
-	if err != nil {
-		return nil, err
-	}
-
-	s.indexCache = indexes
-
-	return s.indexCache, nil
-}
-
-func (s *MssqlSource) GetForeignKeys(ctx context.Context) ([]schema.ForeignKey, error) {
-	if s.foreignKeyCache != nil {
-		return s.foreignKeyCache, nil
-	}
-
-	keys, err := readForeignKeys(ctx, s.db, nil)
-	if err != nil {
-		return nil, err
-	}
-
-	s.foreignKeyCache = keys
-
-	return s.foreignKeyCache, nil
 }
 
 func (s *MssqlSource) GetFunctions(ctx context.Context) ([]schema.Function, error) {
@@ -173,7 +161,7 @@ type MssqlTableDataReader struct {
 	rowPtrs []any
 }
 
-func selectClause(cols []schema.Column) string {
+func selectClause(cols []*schema.Column) string {
 	names := make([]string, len(cols))
 	for i, c := range cols {
 		names[i] = escapeIdentifier(c.Name)
@@ -181,7 +169,7 @@ func selectClause(cols []schema.Column) string {
 	return strings.Join(names, ", ")
 }
 
-func (r *MssqlTableDataReader) Open(ctx context.Context, table string, cols []schema.Column) error {
+func (r *MssqlTableDataReader) Open(ctx context.Context, table string, cols []*schema.Column) error {
 	query := fmt.Sprintf("select %s from %s", selectClause(cols), table)
 	rows, err := r.source.db.QueryContext(ctx, query)
 	if err != nil {
@@ -335,7 +323,7 @@ func fromDataType(dt schema.DataType) string {
 	}
 }
 
-func getTables(ctx context.Context, db *sql.DB) ([]schema.Table, error) {
+func getTables(ctx context.Context, db *sql.DB) ([]*schema.Table, error) {
 	rows, err := db.QueryContext(
 		ctx,
 		`select 
@@ -362,9 +350,9 @@ func getTables(ctx context.Context, db *sql.DB) ([]schema.Table, error) {
 	}
 	defer rows.Close()
 
-	tables := []schema.Table{}
+	tables := []*schema.Table{}
 	var lastTable string
-	var columns []schema.Column
+	var columns []*schema.Column
 
 	for rows.Next() {
 		var tableName, columnName, colType, defaultValue string
@@ -390,10 +378,10 @@ func getTables(ctx context.Context, db *sql.DB) ([]schema.Table, error) {
 
 		if columnID == 1 {
 			if lastTable != "" {
-				tables = append(tables, schema.Table{Name: lastTable, Columns: columns})
+				tables = append(tables, &schema.Table{Name: lastTable, Columns: columns})
 			}
 			lastTable = tableName
-			columns = []schema.Column{}
+			columns = []*schema.Column{}
 		}
 
 		dt := toDataType(colType, maxLength, precision, scale, isAutoInc)
@@ -410,7 +398,7 @@ func getTables(ctx context.Context, db *sql.DB) ([]schema.Table, error) {
 			}
 		}
 
-		columns = append(columns, schema.Column{
+		columns = append(columns, &schema.Column{
 			ColumnID:   columnID,
 			Name:       columnName,
 			MaxLength:  maxLength,
@@ -429,7 +417,7 @@ func getTables(ctx context.Context, db *sql.DB) ([]schema.Table, error) {
 	}
 
 	if lastTable != "" {
-		tables = append(tables, schema.Table{Name: lastTable, Columns: columns})
+		tables = append(tables, &schema.Table{Name: lastTable, Columns: columns})
 	}
 
 	return tables, nil
@@ -550,7 +538,7 @@ func escapeIdentifier(identifier string) string {
 	return fmt.Sprintf("[%s]", identifier)
 }
 
-func (s *MssqlSource) readIndexes(ctx context.Context, db *sql.DB, table *schema.Table) ([]schema.Index, error) {
+func (s *MssqlSource) readIndexes(ctx context.Context, db *sql.DB, table *schema.Table) ([]*schema.Index, error) {
 	q := `SELECT 
     t.name AS table_name,
     i.name AS index_name,
@@ -583,8 +571,8 @@ func (s *MssqlSource) readIndexes(ctx context.Context, db *sql.DB, table *schema
 	defer rows.Close()
 
 	var (
-		result    []schema.Index
-		cur       schema.Index
+		result    []*schema.Index
+		cur       *schema.Index
 		lastTable string
 		lastIndex string
 	)
@@ -616,7 +604,7 @@ func (s *MssqlSource) readIndexes(ctx context.Context, db *sql.DB, table *schema
 		}
 
 		if indexName != lastIndex || tableName != lastTable {
-			if cur.Name != "" {
+			if cur != nil {
 				result = append(result, cur)
 			}
 
@@ -640,7 +628,7 @@ func (s *MssqlSource) readIndexes(ctx context.Context, db *sql.DB, table *schema
 				filter = translateIndexFilter(filterDefinitionNull.String, table)
 			}
 
-			cur = schema.Index{
+			cur = &schema.Index{
 				Table:          tableName,
 				Name:           indexName,
 				Columns:        []string{},
@@ -648,6 +636,7 @@ func (s *MssqlSource) readIndexes(ctx context.Context, db *sql.DB, table *schema
 				Filter:         filter,
 				IndexType:      it,
 			}
+
 			lastTable = tableName
 			lastIndex = indexName
 		}
@@ -664,14 +653,14 @@ func (s *MssqlSource) readIndexes(ctx context.Context, db *sql.DB, table *schema
 		return nil, err
 	}
 
-	if cur.Name != "" {
+	if cur != nil {
 		result = append(result, cur)
 	}
 
 	return result, nil
 }
 
-func readForeignKeys(ctx context.Context, db *sql.DB, table *schema.Table) ([]schema.ForeignKey, error) {
+func readForeignKeys(ctx context.Context, db *sql.DB, table *schema.Table) ([]*schema.ForeignKey, error) {
 	q := `SELECT
 	    fk.name AS key_name,
 	    t.name AS parent_table,
@@ -702,7 +691,7 @@ func readForeignKeys(ctx context.Context, db *sql.DB, table *schema.Table) ([]sc
 	defer rows.Close()
 
 	var (
-		result                    []schema.ForeignKey
+		result                    []*schema.ForeignKey
 		curKey                    string
 		curParent, curRef         string
 		curParentCols, curRefCols []string
@@ -719,7 +708,7 @@ func readForeignKeys(ctx context.Context, db *sql.DB, table *schema.Table) ([]sc
 
 		if constraintColumnID == 1 {
 			if curKey != "" {
-				result = append(result, schema.ForeignKey{
+				result = append(result, &schema.ForeignKey{
 					Name:              curKey,
 					Table:             curParent,
 					Columns:           curParentCols,
@@ -727,6 +716,7 @@ func readForeignKeys(ctx context.Context, db *sql.DB, table *schema.Table) ([]sc
 					ReferencedColumns: curRefCols,
 				})
 			}
+
 			curKey = keyName
 			curParent = pTable
 			curRef = rTable
@@ -743,7 +733,7 @@ func readForeignKeys(ctx context.Context, db *sql.DB, table *schema.Table) ([]sc
 	}
 
 	if curKey != "" {
-		result = append(result, schema.ForeignKey{
+		result = append(result, &schema.ForeignKey{
 			Name:              curKey,
 			Table:             curParent,
 			Columns:           curParentCols,
