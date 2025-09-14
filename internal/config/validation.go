@@ -1,53 +1,27 @@
 package config
 
 import (
+	_ "embed"
 	"errors"
 	"fmt"
 	"io"
-	"os"
-	"path/filepath"
 
 	"cuelang.org/go/cue"
 	"cuelang.org/go/cue/cuecontext"
-	"cuelang.org/go/cue/load"
 	"cuelang.org/go/encoding/yaml"
 )
 
+//go:embed config.cue
+var configCue string
+
 func validateBytes(raw []byte) error {
-	wd, err := os.Getwd()
-	if err != nil {
-		return err
-	}
-
-	root := wd
-	for {
-		if _, err := os.Stat(filepath.Join(root, "config.cue")); err == nil {
-			break
-		}
-		parent := filepath.Dir(root)
-		if parent == root {
-			return errors.New("could not locate config.cue in current or parent directories")
-		}
-		root = parent
-	}
-
-	cfg := &load.Config{Dir: root}
-	insts := load.Instances([]string{"./config.cue"}, cfg)
-	if len(insts) == 0 {
-		return errors.New("no cue instances found for config.cue")
-	}
-	inst := insts[0]
-	if inst.Err != nil {
-		return fmt.Errorf("loading config.cue: %w", inst.Err)
-	}
-
 	cueCtx := cuecontext.New()
-	schema := cueCtx.BuildInstance(inst)
+	schema := cueCtx.CompileString(configCue)
 	if schema.Err() != nil {
 		return fmt.Errorf("building config schema: %w", schema.Err())
 	}
 
-	yamlFile, err := yaml.Extract(filepath.Join(wd, "<input>"), raw)
+	yamlFile, err := yaml.Extract("<input>", raw)
 	if err != nil {
 		return fmt.Errorf("decode yaml to cue: %w", err)
 	}

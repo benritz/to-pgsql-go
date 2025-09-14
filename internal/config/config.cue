@@ -2,11 +2,6 @@ package config
 
 import "strings"
 
-// Root configuration schema for to-pgsql-go.
-// Validate a YAML config with:
-//   cue vet config.yaml config.cue
-// (Your YAML file should have the same top-level keys.)
-
 #Config: {
   source: {
     url?: string 
