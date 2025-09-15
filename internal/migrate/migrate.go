@@ -170,6 +170,17 @@ func (m Migration) Run(ctx context.Context) error {
 		}
 	}
 
+	if m.includeViews {
+		views, err := source.GetViews(ctx)
+		if err != nil {
+			return fmt.Errorf("failed to get views: %w", err)
+		}
+
+		if err := target.CreateViews(ctx, views); err != nil {
+			return fmt.Errorf("failed to create views: %w", err)
+		}
+	}
+
 	return nil
 }
 

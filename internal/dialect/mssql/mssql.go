@@ -14,10 +14,10 @@ import (
 type MssqlSource struct {
 	db             *sql.DB
 	tableCache     map[string]*schema.Table
-	functionCache  []schema.Function
-	procedureCache []schema.Procedure
-	viewCache      []schema.View
-	triggerCache   []schema.Trigger
+	functionCache  []*schema.Function
+	procedureCache []*schema.Procedure
+	viewCache      []*schema.View
+	triggerCache   []*schema.Trigger
 }
 
 func NewMssqlSource(connectionUrl string) (*MssqlSource, error) {
@@ -86,7 +86,7 @@ func (s *MssqlSource) GetTable(ctx context.Context, name string) (*schema.Table,
 	return nil, nil
 }
 
-func (s *MssqlSource) GetFunctions(ctx context.Context) ([]schema.Function, error) {
+func (s *MssqlSource) GetFunctions(ctx context.Context) ([]*schema.Function, error) {
 	if s.functionCache != nil {
 		return s.functionCache, nil
 	}
@@ -101,7 +101,7 @@ func (s *MssqlSource) GetFunctions(ctx context.Context) ([]schema.Function, erro
 	return s.functionCache, nil
 }
 
-func (s *MssqlSource) GetProcedures(ctx context.Context) ([]schema.Procedure, error) {
+func (s *MssqlSource) GetProcedures(ctx context.Context) ([]*schema.Procedure, error) {
 	if s.procedureCache != nil {
 		return s.procedureCache, nil
 	}
@@ -116,7 +116,7 @@ func (s *MssqlSource) GetProcedures(ctx context.Context) ([]schema.Procedure, er
 	return s.procedureCache, nil
 }
 
-func (s *MssqlSource) GetViews(ctx context.Context) ([]schema.View, error) {
+func (s *MssqlSource) GetViews(ctx context.Context) ([]*schema.View, error) {
 	if s.viewCache != nil {
 		return s.viewCache, nil
 	}
@@ -131,7 +131,7 @@ func (s *MssqlSource) GetViews(ctx context.Context) ([]schema.View, error) {
 	return s.viewCache, nil
 }
 
-func (s *MssqlSource) GetTriggers(ctx context.Context) ([]schema.Trigger, error) {
+func (s *MssqlSource) GetTriggers(ctx context.Context) ([]*schema.Trigger, error) {
 	if s.triggerCache != nil {
 		return s.triggerCache, nil
 	}
@@ -519,6 +519,11 @@ func translateBool(s string, table *schema.Table) string {
 	return s
 }
 
+func translateDatePartFn(s string) string {
+	re := regexp.MustCompile(`(?i)datepart\s*\(([^,]+),\s*([^)]+)\)`)
+	return re.ReplaceAllString(s, "extract($1 from $2)")
+}
+
 func translateIndexFilter(filter string, table *schema.Table) string {
 	filter = strings.TrimSpace(filter)
 	if filter == "" {
@@ -780,27 +785,27 @@ func readCompiledObjects[T any](ctx context.Context, db *sql.DB, objType string,
 	return result, nil
 }
 
-func readFunctions(ctx context.Context, db *sql.DB) ([]schema.Function, error) {
-	return readCompiledObjects(ctx, db, "FN", func(name, definition string) schema.Function {
-		return schema.Function{Name: name, Definition: definition}
+func readFunctions(ctx context.Context, db *sql.DB) ([]*schema.Function, error) {
+	return readCompiledObjects(ctx, db, "FN", func(name, definition string) *schema.Function {
+		return &schema.Function{Name: name, Definition: definition}
 	})
 }
 
-func readProcedures(ctx context.Context, db *sql.DB) ([]schema.Procedure, error) {
-	return readCompiledObjects(ctx, db, "P", func(name, definition string) schema.Procedure {
-		return schema.Procedure{Name: name, Definition: definition}
+func readProcedures(ctx context.Context, db *sql.DB) ([]*schema.Procedure, error) {
+	return readCompiledObjects(ctx, db, "P", func(name, definition string) *schema.Procedure {
+		return &schema.Procedure{Name: name, Definition: definition}
 	})
 }
 
-func readViews(ctx context.Context, db *sql.DB) ([]schema.View, error) {
-	return readCompiledObjects(ctx, db, "V", func(name, definition string) schema.View {
-		return schema.View{Name: name, Definition: definition}
+func readViews(ctx context.Context, db *sql.DB) ([]*schema.View, error) {
+	return readCompiledObjects(ctx, db, "V", func(name, definition string) *schema.View {
+		return &schema.View{Name: name, Definition: definition}
 	})
 }
 
-func readTriggers(ctx context.Context, db *sql.DB) ([]schema.Trigger, error) {
-	return readCompiledObjects(ctx, db, "TR", func(name, definition string) schema.Trigger {
-		return schema.Trigger{Name: name, Definition: definition}
+func readTriggers(ctx context.Context, db *sql.DB) ([]*schema.Trigger, error) {
+	return readCompiledObjects(ctx, db, "TR", func(name, definition string) *schema.Trigger {
+		return &schema.Trigger{Name: name, Definition: definition}
 	})
 }
 
@@ -812,6 +817,9 @@ func normalizeLineEndings(s string) string {
 
 func translateViewDef(s string) string {
 	s = strings.TrimSpace(s)
+
+	s = translateQuotedIdentifier(s)
+	s = translateDatePartFn(s)
 
 	// reNLiteral := regexp.MustCompile(`(?i)\bN'((?:[^']|'')*)'`)
 	// s = reNLiteral.ReplaceAllString(s, `'${1}'`)

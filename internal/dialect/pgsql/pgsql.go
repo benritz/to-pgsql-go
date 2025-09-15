@@ -202,6 +202,24 @@ func (t *PgsqlTarget) CopyTables(ctx context.Context, tables []*schema.Table, re
 	return nil
 }
 
+func (t *PgsqlTarget) CreateViews(ctx context.Context, views []*schema.View) error {
+	if t.out != nil {
+		if err := t.writeViews(views); err != nil {
+			return err
+		}
+		return nil
+	}
+
+	if t.conn != nil {
+		// if err := t.createViews(ctx, views); err != nil {
+		// 	return err
+		// }
+		return nil
+	}
+
+	return nil
+}
+
 func (t *PgsqlTarget) writeTableData(ctx context.Context, table *schema.Table, reader dialect.TableDataReader) error {
 	if err := reader.Open(ctx, table.Name, table.Columns); err != nil {
 		return err
@@ -530,6 +548,35 @@ func (t *PgsqlTarget) createForeignKey(ctx context.Context, key *schema.ForeignK
 	return nil
 }
 
+func (t *PgsqlTarget) writeViews(views []*schema.View) error {
+	fmt.Fprintf(t.out, "/* --------------------- VIEWS --------------------- */\n\n")
+
+	for _, view := range views {
+		if err := t.writeView(view); err != nil {
+			return err
+		}
+	}
+
+	fmt.Fprint(t.out, "\n")
+
+	return nil
+}
+
+func (t *PgsqlTarget) writeView(view *schema.View) error {
+	drop := DropViewStatement(view)
+	create := CreateViewStatement(view)
+
+	fmt.Fprintf(
+		t.out,
+		"/* -- %s -- */\n%s\n\n%s\n\n",
+		view.Name,
+		drop,
+		create,
+	)
+
+	return nil
+}
+
 func translateIdentifier(identifier string) string {
 	return strings.ToLower(identifier)
 }
@@ -812,6 +859,16 @@ func CreateTableStatement(table *schema.Table, textType string) string {
 		table.Name,
 		columnDefs,
 	)
+
+	return sql
+}
+
+func DropViewStatement(view *schema.View) string {
+	return fmt.Sprintf("drop view if exists %s;", view.Name)
+}
+
+func CreateViewStatement(view *schema.View) string {
+	sql := translateMarkers(view.Definition)
 
 	return sql
 }
