@@ -54,6 +54,11 @@ func main() {
 	flag.IntVar(&dataBatchSize, "dataBatchSize", 0, "Batch size for data inserts")
 	flag.Parse()
 
+	flagsSet := make(map[string]struct{})
+	flag.Visit(func(f *flag.Flag) {
+		flagsSet[f.Name] = struct{}{}
+	})
+
 	opts := []migrate.Option{}
 
 	if configPath != "" {
@@ -75,24 +80,23 @@ func main() {
 	if textType != "" {
 		opts = append(opts, migrate.WithTextType(textType))
 	}
-	// For booleans we only override when true (can't detect 'explicit false' without pflags)
-	if incData {
-		opts = append(opts, migrate.WithIncludeData(true))
+	if _, ok := flagsSet["incTables"]; ok {
+		opts = append(opts, migrate.WithIncludeTables(incTables))
 	}
-	if incTables {
-		opts = append(opts, migrate.WithIncludeTables(true))
+	if _, ok := flagsSet["incData"]; ok {
+		opts = append(opts, migrate.WithIncludeData(incData))
 	}
-	if incFunctions {
-		opts = append(opts, migrate.WithIncludeFuncs(true))
+	if _, ok := flagsSet["incFunctions"]; ok {
+		opts = append(opts, migrate.WithIncludeFuncs(incFunctions))
 	}
-	if incTriggers {
-		opts = append(opts, migrate.WithIncludeTrigs(true))
+	if _, ok := flagsSet["incTriggers"]; ok {
+		opts = append(opts, migrate.WithIncludeTrigs(incTriggers))
 	}
-	if incProcedures {
-		opts = append(opts, migrate.WithIncludeProcs(true))
+	if _, ok := flagsSet["incProcedures"]; ok {
+		opts = append(opts, migrate.WithIncludeProcs(incProcedures))
 	}
-	if incViews {
-		opts = append(opts, migrate.WithIncludeViews(true))
+	if _, ok := flagsSet["incViews"]; ok {
+		opts = append(opts, migrate.WithIncludeViews(incViews))
 	}
 	if dataBatchSize != 0 {
 		opts = append(opts, migrate.WithDataBatchSize(dataBatchSize))
