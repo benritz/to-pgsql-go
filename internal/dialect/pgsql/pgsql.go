@@ -220,6 +220,60 @@ func (t *PgsqlTarget) CreateViews(ctx context.Context, views []*schema.View) err
 	return nil
 }
 
+func (t *PgsqlTarget) CreateTriggers(ctx context.Context, triggers []*schema.Trigger) error {
+	if t.out != nil {
+		if err := t.writeTriggers(triggers); err != nil {
+			return err
+		}
+		return nil
+	}
+
+	if t.conn != nil {
+		// if err := t.createTriggers(ctx, triggers); err != nil {
+		// 	return err
+		// }
+		return nil
+	}
+
+	return nil
+}
+
+func (t *PgsqlTarget) CreateProcedures(ctx context.Context, procedures []*schema.Procedure) error {
+	if t.out != nil {
+		if err := t.writeProcedures(procedures); err != nil {
+			return err
+		}
+		return nil
+	}
+
+	if t.conn != nil {
+		// if err := t.createProcedures(ctx, procedures); err != nil {
+		// 	return err
+		// }
+		return nil
+	}
+
+	return nil
+}
+
+func (t *PgsqlTarget) CreateFunctions(ctx context.Context, functions []*schema.Function) error {
+	if t.out != nil {
+		if err := t.writeFunctions(functions); err != nil {
+			return err
+		}
+		return nil
+	}
+
+	if t.conn != nil {
+		// if err := t.createFunctions(ctx, functions); err != nil {
+		// 	return err
+		// }
+		return nil
+	}
+
+	return nil
+}
+
 func (t *PgsqlTarget) writeTableData(ctx context.Context, table *schema.Table, reader dialect.TableDataReader) error {
 	if err := reader.Open(ctx, table.Name, table.Columns); err != nil {
 		return err
@@ -577,6 +631,93 @@ func (t *PgsqlTarget) writeView(view *schema.View) error {
 	return nil
 }
 
+func (t *PgsqlTarget) writeTriggers(triggers []*schema.Trigger) error {
+	fmt.Fprintf(t.out, "/* --------------------- TRIGGERS--------------------- */\n\n")
+
+	for _, trigger := range triggers {
+		if err := t.writeTrigger(trigger); err != nil {
+			return err
+		}
+	}
+
+	fmt.Fprint(t.out, "\n")
+
+	return nil
+}
+
+func (t *PgsqlTarget) writeTrigger(trigger *schema.Trigger) error {
+	drop := DropTriggerStatement(trigger)
+	create := CreateTriggerStatement(trigger)
+
+	fmt.Fprintf(
+		t.out,
+		"/* -- %s -- */\n%s\n\n%s\n\n",
+		trigger.Name,
+		drop,
+		create,
+	)
+
+	return nil
+}
+
+func (t *PgsqlTarget) writeProcedures(procedures []*schema.Procedure) error {
+	fmt.Fprintf(t.out, "/* --------------------- PROCEDURES --------------------- */\n\n")
+
+	for _, procedure := range procedures {
+		if err := t.writeProcedure(procedure); err != nil {
+			return err
+		}
+	}
+
+	fmt.Fprint(t.out, "\n")
+
+	return nil
+}
+
+func (t *PgsqlTarget) writeProcedure(procedure *schema.Procedure) error {
+	drop := DropProcedureStatement(procedure)
+	create := CreateProcedureStatement(procedure)
+
+	fmt.Fprintf(
+		t.out,
+		"/* -- %s -- */\n%s\n\n%s\n\n",
+		procedure.Name,
+		drop,
+		create,
+	)
+
+	return nil
+}
+
+func (t *PgsqlTarget) writeFunctions(functions []*schema.Function) error {
+	fmt.Fprintf(t.out, "/* --------------------- FUNCTIONS --------------------- */\n\n")
+
+	for _, function := range functions {
+		if err := t.writeFunction(function); err != nil {
+			return err
+		}
+	}
+
+	fmt.Fprint(t.out, "\n")
+
+	return nil
+}
+
+func (t *PgsqlTarget) writeFunction(function *schema.Function) error {
+	drop := DropFunctionStatement(function)
+	create := CreateFunctionStatement(function)
+
+	fmt.Fprintf(
+		t.out,
+		"/* -- %s -- */\n%s\n\n%s\n\n",
+		function.Name,
+		drop,
+		create,
+	)
+
+	return nil
+}
+
 func translateIdentifier(identifier string) string {
 	return strings.ToLower(identifier)
 }
@@ -870,6 +1011,34 @@ func DropViewStatement(view *schema.View) string {
 func CreateViewStatement(view *schema.View) string {
 	sql := translateMarkers(view.Definition)
 
+	return sql
+}
+
+func DropTriggerStatement(trigger *schema.Trigger) string {
+	return fmt.Sprintf("drop trigger if exists %s;", trigger.Name)
+}
+
+func CreateTriggerStatement(trigger *schema.Trigger) string {
+	sql := translateMarkers(trigger.Definition)
+
+	return sql
+}
+
+func DropProcedureStatement(procedure *schema.Procedure) string {
+	return fmt.Sprintf("drop procedure if exists %s;", procedure.Name)
+}
+
+func CreateProcedureStatement(procedure *schema.Procedure) string {
+	sql := translateMarkers(procedure.Definition)
+	return sql
+}
+
+func DropFunctionStatement(function *schema.Function) string {
+	return fmt.Sprintf("drop function if exists %s;", function.Name)
+}
+
+func CreateFunctionStatement(function *schema.Function) string {
+	sql := translateMarkers(function.Definition)
 	return sql
 }
 
