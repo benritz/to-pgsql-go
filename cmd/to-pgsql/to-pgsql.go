@@ -37,6 +37,7 @@ func configOptions(c *config.Root) []migrate.Option {
 		migrate.WithTextType(c.Target.TextType),
 		migrate.WithDataBatchSize(c.Target.DataBatchSize),
 		migrate.WithTableDefs(c.Schema.Tables),
+		migrate.WithScripts(c.Scripts),
 	}
 }
 

@@ -3,6 +3,8 @@ package migrate
 import (
 	"context"
 	"fmt"
+	"os"
+	"path/filepath"
 	"sort"
 	"strings"
 
@@ -23,6 +25,7 @@ type Migration struct {
 	textType      string
 	dataBatchSize int
 	tableDefs     []config.TableDef
+	scripts       []string
 }
 
 type Option func(*Migration)
@@ -116,6 +119,12 @@ func WithTableDefs(tableDefs []config.TableDef) Option {
 	}
 }
 
+func WithScripts(scripts []string) Option {
+	return func(m *Migration) {
+		m.scripts = scripts
+	}
+}
+
 func (m Migration) Run(ctx context.Context) error {
 	source, err := mssql.NewMssqlSource(m.sourceURL)
 	if err != nil {
@@ -178,6 +187,24 @@ func (m Migration) Run(ctx context.Context) error {
 
 		if err := target.CreateViews(ctx, views); err != nil {
 			return fmt.Errorf("failed to create views: %w", err)
+		}
+	}
+
+	if len(m.scripts) > 0 {
+		for _, script := range m.scripts {
+			path := script
+			if !filepath.IsAbs(path) {
+				path = filepath.Join("", path)
+			}
+
+			content, err := os.ReadFile(path)
+			if err != nil {
+				return err
+			}
+
+			if err := target.RunScript(ctx, string(content)); err != nil {
+				return fmt.Errorf("failed to run script: %w", err)
+			}
 		}
 	}
 

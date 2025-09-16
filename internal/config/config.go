@@ -17,6 +17,7 @@ type Root struct {
 	Target  TargetSection  `yaml:"target"`
 	Include IncludeSection `yaml:"include"`
 	Schema  SchemaSection  `yaml:"schema"`
+	Scripts []string       `yaml:"scripts"`
 }
 
 type SourceSection struct {

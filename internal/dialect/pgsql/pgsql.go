@@ -220,6 +220,22 @@ func (t *PgsqlTarget) CreateViews(ctx context.Context, views []*schema.View) err
 	return nil
 }
 
+func (t *PgsqlTarget) RunScript(ctx context.Context, script string) error {
+	if t.out != nil {
+		fmt.Fprintf(t.out, "/* --------------------- SCRIPT --------------------- */\n\n%s\n\n", script)
+		return nil
+	}
+
+	if t.conn != nil {
+		if _, err := t.conn.Exec(ctx, script); err != nil {
+			return fmt.Errorf("Failed to execute script: %v", err)
+		}
+		return nil
+	}
+
+	return nil
+}
+
 func (t *PgsqlTarget) writeTableData(ctx context.Context, table *schema.Table, reader dialect.TableDataReader) error {
 	if err := reader.Open(ctx, table.Name, table.Columns); err != nil {
 		return err
