@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"strings"
 
 	"benritz/topgsql/internal/schema"
@@ -13,10 +14,12 @@ import (
 )
 
 type Root struct {
-	Source  SourceSection  `yaml:"source"`
-	Target  TargetSection  `yaml:"target"`
-	Include IncludeSection `yaml:"include"`
-	Schema  SchemaSection  `yaml:"schema"`
+	Source          SourceSection     `yaml:"source"`
+	Target          TargetSection     `yaml:"target"`
+	Include         IncludeSection    `yaml:"include"`
+	Schema          SchemaSection     `yaml:"schema"`
+	Scripts         map[string]string `yaml:"scripts"`
+	ScriptsBasePath string            `yaml:"scripts_base_path"`
 }
 
 type SourceSection struct {
@@ -85,7 +88,17 @@ func LoadFile(path string) (*Root, error) {
 		return nil, err
 	}
 	defer f.Close()
-	return Load(f)
+
+	root, err := Load(f)
+	if err != nil {
+		return nil, err
+	}
+
+	if root.ScriptsBasePath == "" {
+		root.ScriptsBasePath = filepath.Dir(path)
+	}
+
+	return root, nil
 }
 
 func Load(r io.Reader) (*Root, error) {
@@ -118,6 +131,7 @@ func Load(r io.Reader) (*Root, error) {
 func expandEnv(cfg *Root) {
 	cfg.Source.URL = os.ExpandEnv(cfg.Source.URL)
 	cfg.Target.URL = os.ExpandEnv(cfg.Target.URL)
+	cfg.ScriptsBasePath = os.ExpandEnv(cfg.ScriptsBasePath)
 }
 
 func BuildTables(tableDefs []TableDef, tablesMap map[string]*schema.Table) (map[string]*schema.Table, error) {

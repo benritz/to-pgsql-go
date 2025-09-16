@@ -25,6 +25,9 @@ import "strings"
   schema?: {
     tables?: [...#Table]
   }
+
+  scripts?: { [string]: string & != "" }
+  scripts_base_path?: string & != ""
 }
 
 #Table: {
