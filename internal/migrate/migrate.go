@@ -3,6 +3,8 @@ package migrate
 import (
 	"context"
 	"fmt"
+	"os"
+	"path/filepath"
 	"sort"
 	"strings"
 
@@ -23,6 +25,7 @@ type Migration struct {
 	textType      string
 	dataBatchSize int
 	tableDefs     []config.TableDef
+	scripts       []string
 }
 
 type Option func(*Migration)
@@ -113,6 +116,12 @@ func WithDataBatchSize(size int) Option {
 func WithTableDefs(tableDefs []config.TableDef) Option {
 	return func(m *Migration) {
 		m.tableDefs = tableDefs
+	}
+}
+
+func WithScripts(scripts []string) Option {
+	return func(m *Migration) {
+		m.scripts = scripts
 	}
 }
 
@@ -211,6 +220,24 @@ func (m Migration) Run(ctx context.Context) error {
 
 		if err := target.CreateFunctions(ctx, functions); err != nil {
 			return fmt.Errorf("failed to create functions: %w", err)
+		}
+	}
+
+	if len(m.scripts) > 0 {
+		for _, script := range m.scripts {
+			path := script
+			if !filepath.IsAbs(path) {
+				path = filepath.Join("", path)
+			}
+
+			content, err := os.ReadFile(path)
+			if err != nil {
+				return err
+			}
+
+			if err := target.RunScript(ctx, string(content)); err != nil {
+				return fmt.Errorf("failed to run script: %w", err)
+			}
 		}
 	}
 

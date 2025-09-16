@@ -220,6 +220,20 @@ func (t *PgsqlTarget) CreateViews(ctx context.Context, views []*schema.View) err
 	return nil
 }
 
+func (t *PgsqlTarget) RunScript(ctx context.Context, script string) error {
+	if t.out != nil {
+		fmt.Fprintf(t.out, "/* --------------------- SCRIPT --------------------- */\n\n%s\n\n", script)
+		return nil
+	}
+	if t.conn != nil {
+		if _, err := t.conn.Exec(ctx, script); err != nil {
+			return fmt.Errorf("Failed to execute script: %v", err)
+		}
+		return nil
+	}
+	return nil
+}
+
 func (t *PgsqlTarget) CreateTriggers(ctx context.Context, triggers []*schema.Trigger) error {
 	if t.out != nil {
 		if err := t.writeTriggers(triggers); err != nil {
@@ -227,14 +241,10 @@ func (t *PgsqlTarget) CreateTriggers(ctx context.Context, triggers []*schema.Tri
 		}
 		return nil
 	}
-
 	if t.conn != nil {
-		// if err := t.createTriggers(ctx, triggers); err != nil {
-		// 	return err
-		// }
+		// placeholder for future trigger creation in database mode
 		return nil
 	}
-
 	return nil
 }
 
@@ -245,14 +255,10 @@ func (t *PgsqlTarget) CreateProcedures(ctx context.Context, procedures []*schema
 		}
 		return nil
 	}
-
 	if t.conn != nil {
-		// if err := t.createProcedures(ctx, procedures); err != nil {
-		// 	return err
-		// }
+		// placeholder for future procedure creation in database mode
 		return nil
 	}
-
 	return nil
 }
 
@@ -263,14 +269,10 @@ func (t *PgsqlTarget) CreateFunctions(ctx context.Context, functions []*schema.F
 		}
 		return nil
 	}
-
 	if t.conn != nil {
-		// if err := t.createFunctions(ctx, functions); err != nil {
-		// 	return err
-		// }
+		// placeholder for future function creation in database mode
 		return nil
 	}
-
 	return nil
 }
 
