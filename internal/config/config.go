@@ -14,12 +14,12 @@ import (
 )
 
 type Root struct {
-	Source          SourceSection     `yaml:"source"`
-	Target          TargetSection     `yaml:"target"`
-	Include         IncludeSection    `yaml:"include"`
-	Schema          SchemaSection     `yaml:"schema"`
-	Scripts         map[string]string `yaml:"scripts"`
-	ScriptsBasePath string            `yaml:"scripts_base_path"`
+	Source          SourceSection  `yaml:"source"`
+	Target          TargetSection  `yaml:"target"`
+	Include         IncludeSection `yaml:"include"`
+	Schema          SchemaSection  `yaml:"schema"`
+	Scripts         []string       `yaml:"scripts"`
+	ScriptsBasePath string         `yaml:"scripts_base_path"`
 }
 
 type SourceSection struct {

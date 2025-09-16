@@ -14,18 +14,19 @@ import (
 )
 
 type Migration struct {
-	sourceURL     string
-	targetURL     string
-	includeData   bool
-	includeTables bool
-	includeFuncs  bool
-	includeTrigs  bool
-	includeProcs  bool
-	includeViews  bool
-	textType      string
-	dataBatchSize int
-	tableDefs     []config.TableDef
-	scripts       []string
+	sourceURL       string
+	targetURL       string
+	includeData     bool
+	includeTables   bool
+	includeFuncs    bool
+	includeTrigs    bool
+	includeProcs    bool
+	includeViews    bool
+	textType        string
+	dataBatchSize   int
+	tableDefs       []config.TableDef
+	scripts         []string
+	scriptsBasePath string
 }
 
 type Option func(*Migration)
@@ -119,9 +120,10 @@ func WithTableDefs(tableDefs []config.TableDef) Option {
 	}
 }
 
-func WithScripts(scripts []string) Option {
+func WithScripts(scripts []string, scriptsBasePath string) Option {
 	return func(m *Migration) {
 		m.scripts = scripts
+		m.scriptsBasePath = scriptsBasePath
 	}
 }
 
@@ -227,7 +229,7 @@ func (m Migration) Run(ctx context.Context) error {
 		for _, script := range m.scripts {
 			path := script
 			if !filepath.IsAbs(path) {
-				path = filepath.Join("", path)
+				path = filepath.Join(m.scriptsBasePath, path)
 			}
 
 			content, err := os.ReadFile(path)
