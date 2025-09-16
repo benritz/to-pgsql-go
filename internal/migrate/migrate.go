@@ -190,6 +190,39 @@ func (m Migration) Run(ctx context.Context) error {
 		}
 	}
 
+	if m.includeTrigs {
+		triggers, err := source.GetTriggers(ctx)
+		if err != nil {
+			return fmt.Errorf("failed to get triggers: %w", err)
+		}
+
+		if err := target.CreateTriggers(ctx, triggers); err != nil {
+			return fmt.Errorf("failed to create triggers: %w", err)
+		}
+	}
+
+	if m.includeProcs {
+		procedures, err := source.GetProcedures(ctx)
+		if err != nil {
+			return fmt.Errorf("failed to get procedures: %w", err)
+		}
+
+		if err := target.CreateProcedures(ctx, procedures); err != nil {
+			return fmt.Errorf("failed to create procedures: %w", err)
+		}
+	}
+
+	if m.includeFuncs {
+		functions, err := source.GetFunctions(ctx)
+		if err != nil {
+			return fmt.Errorf("failed to get functions: %w", err)
+		}
+
+		if err := target.CreateFunctions(ctx, functions); err != nil {
+			return fmt.Errorf("failed to create functions: %w", err)
+		}
+	}
+
 	if len(m.scripts) > 0 {
 		for _, script := range m.scripts {
 			path := script
