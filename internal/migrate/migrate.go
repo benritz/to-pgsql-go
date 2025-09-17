@@ -242,7 +242,6 @@ func (m Migration) Run(ctx context.Context) error {
 			}
 			paths = append(paths, path)
 		}
-
 		if err := target.CreateScripts(ctx, paths); err != nil {
 			return fmt.Errorf("failed to create scripts: %w", err)
 		}

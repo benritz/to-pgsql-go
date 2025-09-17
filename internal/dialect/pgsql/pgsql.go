@@ -224,7 +224,6 @@ func (t *PgsqlTarget) CreateViews(ctx context.Context, views []*schema.View) err
 func (t *PgsqlTarget) CreateScripts(ctx context.Context, scripts []string) error {
 	if t.out != nil {
 		fmt.Fprintf(t.out, "/* --------------------- SCRIPTS --------------------- */\n\n")
-		return nil
 	}
 
 	for _, path := range scripts {

@@ -30,7 +30,6 @@ func configOptions(c *config.Root) []migrate.Option {
 		migrate.WithSourceURL(c.Source.URL),
 		migrate.WithTargetURL(c.Target.URL),
 		migrate.WithTableDefs(c.Schema.Tables),
-		migrate.WithScripts(c.Scripts, c.ScriptsBasePath),
 		migrate.WithIncludeData(c.Include.Data),
 		migrate.WithIncludeTables(c.Include.Tables),
 		migrate.WithIncludeFuncs(c.Include.Functions),
@@ -38,6 +37,7 @@ func configOptions(c *config.Root) []migrate.Option {
 		migrate.WithIncludeProcs(c.Include.Procedures),
 		migrate.WithIncludeViews(c.Include.Views),
 		migrate.WithIncludeScripts(c.Include.Scripts),
+		migrate.WithScripts(c.Scripts, c.ScriptsBasePath),
 		migrate.WithTextType(c.Target.TextType),
 		migrate.WithDataBatchSize(c.Target.DataBatchSize),
 	}
