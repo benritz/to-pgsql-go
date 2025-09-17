@@ -191,7 +191,7 @@ func (t *PgsqlTarget) CopyTables(ctx context.Context, tables []*schema.Table, re
 
 		for _, table := range tables {
 			if err := t.copyTableData(ctx, table, reader); err != nil {
-				return fmt.Errorf("Copy data failed for %s: %v", table.Name, err)
+				return fmt.Errorf("copy data failed for %s: %v", table.Name, err)
 			}
 		}
 
@@ -212,10 +212,7 @@ func (t *PgsqlTarget) CreateViews(ctx context.Context, views []*schema.View) err
 	}
 
 	if t.conn != nil {
-		// if err := t.createViews(ctx, views); err != nil {
-		// 	return err
-		// }
-		return nil
+		return fmt.Errorf("create views is unsupported")
 	}
 
 	return nil
@@ -266,8 +263,7 @@ func (t *PgsqlTarget) CreateTriggers(ctx context.Context, triggers []*schema.Tri
 		return nil
 	}
 	if t.conn != nil {
-		// placeholder for future trigger creation in database mode
-		return nil
+		return fmt.Errorf("create triggers is unsupported")
 	}
 	return nil
 }
@@ -280,8 +276,7 @@ func (t *PgsqlTarget) CreateProcedures(ctx context.Context, procedures []*schema
 		return nil
 	}
 	if t.conn != nil {
-		// placeholder for future procedure creation in database mode
-		return nil
+		return fmt.Errorf("create procedures is unsupported")
 	}
 	return nil
 }
@@ -294,8 +289,7 @@ func (t *PgsqlTarget) CreateFunctions(ctx context.Context, functions []*schema.F
 		return nil
 	}
 	if t.conn != nil {
-		// placeholder for future function creation in database mode
-		return nil
+		return fmt.Errorf("create functions is unsupported")
 	}
 	return nil
 }
@@ -545,7 +539,7 @@ func (t *PgsqlTarget) createTableSchema(ctx context.Context, table *schema.Table
 	sql := CreateTableStatement(table, t.textType)
 	_, err := t.conn.Exec(ctx, sql)
 	if err != nil {
-		return fmt.Errorf("Failed to create table %s: %v", table.Name, err)
+		return fmt.Errorf("failed to create table %s: %v", table.Name, err)
 	}
 	return nil
 }
@@ -583,7 +577,7 @@ func (t *PgsqlTarget) createIndex(ctx context.Context, index *schema.Index) erro
 	sql := CreateIndexStatement(index)
 	_, err := t.conn.Exec(ctx, sql)
 	if err != nil {
-		return fmt.Errorf("Failed to create index %v: %v", index, err)
+		return fmt.Errorf("failed to create index %v: %v", index, err)
 	}
 
 	return nil
@@ -622,7 +616,7 @@ func (t *PgsqlTarget) createForeignKey(ctx context.Context, key *schema.ForeignK
 	sql := CreateForeignKeyStatement(key)
 	_, err := t.conn.Exec(ctx, sql)
 	if err != nil {
-		return fmt.Errorf("Failed to create foreign key %v: %v", key, err)
+		return fmt.Errorf("failed to create foreign key %v: %v", key, err)
 	}
 
 	return nil
