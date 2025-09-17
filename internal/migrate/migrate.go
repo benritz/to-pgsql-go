@@ -12,6 +12,14 @@ import (
 	"benritz/topgsql/internal/dialect/pgsql"
 )
 
+type IncDataType string
+
+const (
+	IncDataNone   IncDataType = "none"
+	IncDataInsert IncDataType = "insert"
+	IncDataMerge  IncDataType = "merge"
+)
+
 type Migration struct {
 	sourceURL       string
 	targetURL       string
