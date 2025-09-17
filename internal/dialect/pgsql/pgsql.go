@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -220,17 +221,41 @@ func (t *PgsqlTarget) CreateViews(ctx context.Context, views []*schema.View) err
 	return nil
 }
 
-func (t *PgsqlTarget) RunScript(ctx context.Context, script string) error {
+func (t *PgsqlTarget) CreateScripts(ctx context.Context, scripts []string) error {
 	if t.out != nil {
-		fmt.Fprintf(t.out, "/* --------------------- SCRIPT --------------------- */\n\n%s\n\n", script)
+		fmt.Fprintf(t.out, "/* --------------------- SCRIPTS --------------------- */\n\n")
 		return nil
 	}
+
+	for _, path := range scripts {
+		content, err := os.ReadFile(path)
+		if err != nil {
+			return err
+		}
+
+		name := filepath.Base(path)
+
+		if err := t.createScript(ctx, name, string(content)); err != nil {
+			return fmt.Errorf("failed to create script: %w", err)
+		}
+	}
+
+	return nil
+}
+
+func (t *PgsqlTarget) createScript(ctx context.Context, name string, contents string) error {
+	if t.out != nil {
+		fmt.Fprintf(t.out, "/* -- %s -- */\n\n%s\n\n", name, contents)
+		return nil
+	}
+
 	if t.conn != nil {
-		if _, err := t.conn.Exec(ctx, script); err != nil {
-			return fmt.Errorf("Failed to execute script: %v", err)
+		if _, err := t.conn.Exec(ctx, contents); err != nil {
+			return fmt.Errorf("Failed to execute script: %s %v", name, err)
 		}
 		return nil
 	}
+
 	return nil
 }
 

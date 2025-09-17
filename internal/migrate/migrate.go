@@ -3,7 +3,6 @@ package migrate
 import (
 	"context"
 	"fmt"
-	"os"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -22,6 +21,7 @@ type Migration struct {
 	includeTrigs    bool
 	includeProcs    bool
 	includeViews    bool
+	includeScripts  bool
 	textType        string
 	dataBatchSize   int
 	tableDefs       []config.TableDef
@@ -102,6 +102,12 @@ func WithIncludeViews(v bool) Option {
 	}
 }
 
+func WithIncludeScripts(v bool) Option {
+	return func(m *Migration) {
+		m.includeScripts = v
+	}
+}
+
 func WithTextType(t string) Option {
 	return func(m *Migration) {
 		m.textType = t
@@ -124,6 +130,7 @@ func WithScripts(scripts []string, scriptsBasePath string) Option {
 	return func(m *Migration) {
 		m.scripts = scripts
 		m.scriptsBasePath = scriptsBasePath
+		m.includeScripts = len(scripts) > 0
 	}
 }
 
@@ -225,21 +232,19 @@ func (m Migration) Run(ctx context.Context) error {
 		}
 	}
 
-	if len(m.scripts) > 0 {
+	if m.includeScripts && len(m.scripts) > 0 {
+		var paths []string
+
 		for _, script := range m.scripts {
 			path := script
 			if !filepath.IsAbs(path) {
 				path = filepath.Join(m.scriptsBasePath, path)
 			}
+			paths = append(paths, path)
+		}
 
-			content, err := os.ReadFile(path)
-			if err != nil {
-				return err
-			}
-
-			if err := target.RunScript(ctx, string(content)); err != nil {
-				return fmt.Errorf("failed to run script: %w", err)
-			}
+		if err := target.CreateScripts(ctx, paths); err != nil {
+			return fmt.Errorf("failed to create scripts: %w", err)
 		}
 	}
 
