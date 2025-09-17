@@ -13,6 +13,14 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
+type DataMode string
+
+const (
+	DataModeNone      DataMode = "none"
+	DataModeOverwrite DataMode = "overwrite"
+	DataModeMerge     DataMode = "merge"
+)
+
 type Root struct {
 	Source          SourceSection  `yaml:"source"`
 	Target          TargetSection  `yaml:"target"`
@@ -33,13 +41,13 @@ type TargetSection struct {
 }
 
 type IncludeSection struct {
-	Data       bool `yaml:"data"`
-	Tables     bool `yaml:"tables"`
-	Functions  bool `yaml:"functions"`
-	Triggers   bool `yaml:"triggers"`
-	Procedures bool `yaml:"procedures"`
-	Views      bool `yaml:"views"`
-	Scripts    bool `yaml:"scripts"`
+	Data       DataMode `yaml:"data"`
+	Tables     bool     `yaml:"tables"`
+	Functions  bool     `yaml:"functions"`
+	Triggers   bool     `yaml:"triggers"`
+	Procedures bool     `yaml:"procedures"`
+	Views      bool     `yaml:"views"`
+	Scripts    bool     `yaml:"scripts"`
 }
 
 type SchemaSection struct {

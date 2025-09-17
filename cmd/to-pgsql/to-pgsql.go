@@ -14,7 +14,7 @@ var (
 	configPath    string
 	sourceUrl     string
 	targetUrl     string
-	incData       bool
+	incData       string
 	incTables     bool
 	incFunctions  bool
 	incTriggers   bool
@@ -48,7 +48,7 @@ func main() {
 	flag.StringVar(&sourceUrl, "source", "", "Source database connection URL")
 	flag.StringVar(&targetUrl, "target", "", "Target file or database connection URL")
 	flag.StringVar(&textType, "textType", "citext", "How to convert the text column schema. Either text, citext or varchar (default).")
-	flag.BoolVar(&incData, "incData", false, "Include table data")
+	flag.StringVar(&incData, "incData", "none", "Include table data. Either none (default), overwrite or merge.")
 	flag.BoolVar(&incTables, "incTables", false, "Include tables schema")
 	flag.BoolVar(&incFunctions, "incFunctions", false, "Include functions")
 	flag.BoolVar(&incProcedures, "incProcedures", false, "Include procedures")
@@ -88,7 +88,7 @@ func main() {
 		opts = append(opts, migrate.WithIncludeTables(incTables))
 	}
 	if _, ok := flagsSet["incData"]; ok {
-		opts = append(opts, migrate.WithIncludeData(incData))
+		opts = append(opts, migrate.WithIncludeData(config.DataMode(incData)))
 	}
 	if _, ok := flagsSet["incFunctions"]; ok {
 		opts = append(opts, migrate.WithIncludeFuncs(incFunctions))

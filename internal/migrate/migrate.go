@@ -12,18 +12,10 @@ import (
 	"benritz/topgsql/internal/dialect/pgsql"
 )
 
-type IncDataType string
-
-const (
-	IncDataNone   IncDataType = "none"
-	IncDataInsert IncDataType = "insert"
-	IncDataMerge  IncDataType = "merge"
-)
-
 type Migration struct {
 	sourceURL       string
 	targetURL       string
-	includeData     bool
+	includeData     config.DataMode
 	includeTables   bool
 	includeFuncs    bool
 	includeTrigs    bool
@@ -62,21 +54,23 @@ func New(opts ...Option) (*Migration, error) {
 	return &m, nil
 }
 
-func WithSourceURL(u string) Option {
+func WithSourceURL(v string) Option {
 	return func(m *Migration) {
-		m.sourceURL = u
+		m.sourceURL = v
 	}
 }
 
-func WithTargetURL(u string) Option {
+func WithTargetURL(v string) Option {
 	return func(m *Migration) {
-		m.targetURL = u
+		m.targetURL = v
 	}
 }
 
-func WithIncludeData(v bool) Option {
+func WithIncludeData(v config.DataMode) Option {
 	return func(m *Migration) {
-		m.includeData = v
+		if v != config.DataModeNone || v != config.DataModeOverwrite || v != config.DataModeMerge {
+			m.includeData = v
+		}
 	}
 }
 
@@ -160,7 +154,7 @@ func (m Migration) Run(ctx context.Context) error {
 		return fmt.Errorf("failed to create table data reader: %w", err)
 	}
 
-	if m.includeTables || m.includeData {
+	if m.includeTables || m.includeData != "none" {
 		tablesMap, err := source.GetTables(ctx)
 		if err != nil {
 			return err
@@ -183,7 +177,7 @@ func (m Migration) Run(ctx context.Context) error {
 			}
 		}
 
-		if m.includeData {
+		if m.includeData != config.DataModeNone {
 			if err := target.CopyTables(ctx, tables, reader); err != nil {
 				return fmt.Errorf("failed to copy table data: %w", err)
 			}
