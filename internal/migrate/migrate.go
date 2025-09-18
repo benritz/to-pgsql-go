@@ -69,9 +69,9 @@ func WithTargetURL(v string) Option {
 func WithIncludeData(v config.DataMode) (Option, error) {
 	var err error
 
-	if v == config.DataModeNone || v == config.DataModeOverwrite || v == config.DataModeMerge {
-		v = config.DataModeNone
+	if v != config.DataModeNone && v != config.DataModeOverwrite && v != config.DataModeMerge {
 		err = fmt.Errorf("invalid data mode: %s", v)
+		v = config.DataModeNone
 	}
 
 	opt := func(m *Migration) {
