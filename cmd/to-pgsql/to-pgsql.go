@@ -25,22 +25,30 @@ var (
 	dataBatchSize int
 )
 
-func configOptions(c *config.Root) []migrate.Option {
-	return []migrate.Option{
-		migrate.WithSourceURL(c.Source.URL),
-		migrate.WithTargetURL(c.Target.URL),
-		migrate.WithTableDefs(c.Schema.Tables),
-		migrate.WithIncludeData(c.Include.Data),
-		migrate.WithIncludeTables(c.Include.Tables),
-		migrate.WithIncludeFuncs(c.Include.Functions),
-		migrate.WithIncludeTrigs(c.Include.Triggers),
-		migrate.WithIncludeProcs(c.Include.Procedures),
-		migrate.WithIncludeViews(c.Include.Views),
-		migrate.WithIncludeScripts(c.Include.Scripts),
-		migrate.WithScripts(c.Scripts, c.ScriptsBasePath),
-		migrate.WithTextType(c.Target.TextType),
-		migrate.WithDataBatchSize(c.Target.DataBatchSize),
+func configOptions(c *config.Root) ([]migrate.Option, error) {
+	var opts []migrate.Option
+
+	opts = append(opts, migrate.WithSourceURL(c.Source.URL))
+	opts = append(opts, migrate.WithTargetURL(c.Target.URL))
+	opts = append(opts, migrate.WithTableDefs(c.Schema.Tables))
+
+	opt, err := migrate.WithIncludeData(c.Include.Data)
+	if err != nil {
+		return opts, err
 	}
+	opts = append(opts, opt)
+
+	opts = append(opts, migrate.WithIncludeTables(c.Include.Tables))
+	opts = append(opts, migrate.WithIncludeFuncs(c.Include.Functions))
+	opts = append(opts, migrate.WithIncludeTrigs(c.Include.Triggers))
+	opts = append(opts, migrate.WithIncludeProcs(c.Include.Procedures))
+	opts = append(opts, migrate.WithIncludeViews(c.Include.Views))
+	opts = append(opts, migrate.WithIncludeScripts(c.Include.Scripts))
+	opts = append(opts, migrate.WithScripts(c.Scripts, c.ScriptsBasePath))
+	opts = append(opts, migrate.WithTextType(c.Target.TextType))
+	opts = append(opts, migrate.WithDataBatchSize(c.Target.DataBatchSize))
+
+	return opts, nil
 }
 
 func main() {
@@ -72,7 +80,12 @@ func main() {
 			os.Exit(1)
 		}
 
-		opts = append(opts, configOptions(cfg)...)
+		configOpts, err := configOptions(cfg)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "configuration error: %v\n", err)
+			os.Exit(1)
+		}
+		opts = append(opts, configOpts...)
 	}
 
 	if sourceUrl != "" {
@@ -88,7 +101,12 @@ func main() {
 		opts = append(opts, migrate.WithIncludeTables(incTables))
 	}
 	if _, ok := flagsSet["incData"]; ok {
-		opts = append(opts, migrate.WithIncludeData(config.DataMode(incData)))
+		opt, err := migrate.WithIncludeData(config.DataMode(incData))
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "configuration error: %v\n", err)
+			os.Exit(1)
+		}
+		opts = append(opts, opt)
 	}
 	if _, ok := flagsSet["incFunctions"]; ok {
 		opts = append(opts, migrate.WithIncludeFuncs(incFunctions))

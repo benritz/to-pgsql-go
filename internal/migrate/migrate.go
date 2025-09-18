@@ -66,12 +66,19 @@ func WithTargetURL(v string) Option {
 	}
 }
 
-func WithIncludeData(v config.DataMode) Option {
-	return func(m *Migration) {
-		if v != config.DataModeNone || v != config.DataModeOverwrite || v != config.DataModeMerge {
-			m.includeData = v
-		}
+func WithIncludeData(v config.DataMode) (Option, error) {
+	var err error
+
+	if v == config.DataModeNone || v == config.DataModeOverwrite || v == config.DataModeMerge {
+		v = config.DataModeNone
+		err = fmt.Errorf("invalid data mode: %s", v)
 	}
+
+	opt := func(m *Migration) {
+		m.includeData = v
+	}
+
+	return opt, err
 }
 
 func WithIncludeTables(v bool) Option {
