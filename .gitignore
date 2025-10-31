@@ -34,3 +34,6 @@ go.work.sum
 # dist
 dist
 
+# OS files
+.DS_Store
+Thumbs.db
