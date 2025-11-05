@@ -185,7 +185,8 @@ func (m Migration) Run(ctx context.Context) error {
 		}
 
 		if m.includeData != config.DataModeNone {
-			if err := target.CopyTables(ctx, tables, reader); err != nil {
+			merge := m.includeData == config.DataModeMerge
+			if err := target.CopyTables(ctx, tables, reader, merge); err != nil {
 				return fmt.Errorf("failed to copy table data: %w", err)
 			}
 		}

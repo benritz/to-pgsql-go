@@ -2,9 +2,12 @@ package pgsql
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/base64"
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"time"
 
@@ -172,7 +175,7 @@ func (t *PgsqlTarget) CreateForeignKeys(ctx context.Context, keys []*schema.Fore
 	return nil
 }
 
-func (t *PgsqlTarget) CopyTables(ctx context.Context, tables []*schema.Table, reader dialect.TableDataReader) error {
+func (t *PgsqlTarget) CopyTables(ctx context.Context, tables []*schema.Table, reader dialect.TableDataReader, merge bool) error {
 	if t.out != nil {
 		for _, table := range tables {
 			if err := t.writeTableData(ctx, table, reader); err != nil {
@@ -190,7 +193,7 @@ func (t *PgsqlTarget) CopyTables(ctx context.Context, tables []*schema.Table, re
 		defer setReplicationOff(ctx, t.conn)
 
 		for _, table := range tables {
-			if err := t.copyTableData(ctx, table, reader); err != nil {
+			if err := t.copyTableData(ctx, table, reader, merge); err != nil {
 				return fmt.Errorf("copy data failed for %s: %v", table.Name, err)
 			}
 		}
@@ -385,10 +388,85 @@ func (t *PgsqlTarget) writeSeqReset() {
 	)
 }
 
-func (t *PgsqlTarget) copyTableData(ctx context.Context, table *schema.Table, reader dialect.TableDataReader) error {
+func (t *PgsqlTarget) copyTableData(ctx context.Context, table *schema.Table, reader dialect.TableDataReader, merge bool) error {
 	tablesMap, err := t.GetTables(ctx)
 	if err != nil {
 		return err
+	}
+
+	copyData := func(table *schema.Table) error {
+		tableName := translateIdentifier(table.Name)
+
+		cols := schema.UpdateableColumns(table)
+
+		colNames := make([]string, len(cols))
+		for n, col := range cols {
+			colNames[n] = translateIdentifier(col.Name)
+		}
+
+		if err := reader.Open(ctx, table.Name, cols); err != nil {
+			return err
+		}
+
+		sql := fmt.Sprintf("truncate table %s cascade;", escapeIdentifier(tableName))
+		if _, err := t.conn.Exec(ctx, sql); err != nil {
+			return err
+		}
+
+		var copyRows [][]any
+		CopyBatchSize := 1000
+
+		copy := func() error {
+			if len(copyRows) > 0 {
+				count, err := t.conn.CopyFrom(ctx, pgx.Identifier{tableName}, colNames, pgx.CopyFromRows(copyRows))
+				if err != nil {
+					return err
+				}
+
+				fmt.Printf("Copied %d rows into %s\n", count, table.Name)
+			}
+
+			return nil
+		}
+
+		for {
+			row, err := reader.ReadRow()
+			if err != nil {
+				reader.Close(ctx)
+				return err
+			}
+
+			if len(row) == 0 {
+				break
+			}
+
+			copyRow := make([]any, len(cols))
+
+			for i, data := range row {
+				copyRow[i] = ConvertValue(data, cols[i].DataType)
+			}
+
+			copyRows = append(copyRows, copyRow)
+
+			if len(copyRows) >= CopyBatchSize {
+				if err := copy(); err != nil {
+					reader.Close(ctx)
+					return err
+				}
+
+				copyRows = copyRows[:0]
+			}
+		}
+
+		if err := reader.Close(ctx); err != nil {
+			return err
+		}
+
+		if err := copy(); err != nil {
+			return err
+		}
+
+		return nil
 	}
 
 	targetTableName := translateIdentifier(table.Name)
@@ -398,13 +476,108 @@ func (t *PgsqlTarget) copyTableData(ctx context.Context, table *schema.Table, re
 		sql := CreateTableStatement(table, t.textType)
 		_, err := t.conn.Exec(ctx, sql)
 		if err != nil {
-			return fmt.Errorf("Table %s not found in target database. Failed to create table: %v", targetTableName, err)
+			return fmt.Errorf("failed to create table %s in target database: %v", targetTableName, err)
 		}
 
-		targetTable = table
+		return copyData(table)
 	}
 
-	cols := schema.UpdateableColumns(targetTable)
+	if !merge {
+		return copyData(targetTable)
+	}
+
+	getTempTableName := func() (string, error) {
+		retries := 10
+		for retries > 0 {
+			tempTableName, err := generateTempTableName()
+			if err != nil {
+				return "", fmt.Errorf("failed to create temp table: %v", err)
+			}
+			if _, ok := tablesMap[tempTableName]; ok {
+				return tempTableName, nil
+			}
+			retries--
+		}
+		return "", nil
+	}
+
+	tempTable := *table
+	if tempTable.Name, err = getTempTableName(); err != nil {
+		return nil
+	}
+
+	sql := CreateTableStatement(table, t.textType)
+	_, err = t.conn.Exec(ctx, sql)
+	if err != nil {
+		return fmt.Errorf("failed to create temp table: %v", err)
+	}
+
+	dropTempTable := func() error {
+		sql := DropTableStatement(&tempTable)
+		_, err := t.conn.Exec(ctx, sql)
+		if err != nil {
+			return fmt.Errorf("failed to drop temp table: %v", err)
+		}
+		return nil
+	}
+
+	defer dropTempTable()
+
+	if err := copyData(&tempTable); err != nil {
+		return err
+	}
+
+	// merge
+	pkColNames := schema.PrimaryKeyColumns(table)
+
+	matchColNames := make([]string, len(pkColNames))
+	for n, col := range pkColNames {
+		translatedName := translateIdentifier(col)
+		matchColNames[n] = fmt.Sprintf("t.%s = s.%s", translatedName, translatedName)
+	}
+	matchClause := strings.Join(matchColNames, ", ")
+
+	updateableCols := schema.UpdateableColumns(table)
+
+	updateColNames := make([]string, len(updateableCols)-len(pkColNames))
+	for n, col := range updateableCols {
+		if slices.Contains(pkColNames, col.Name) {
+			translatedName := translateIdentifier(col.Name)
+			updateColNames[n] = fmt.Sprintf("%s = s.%s", translatedName, translatedName)
+		}
+	}
+	updateClause := strings.Join(updateColNames, ", ")
+
+	insertColNames := make([]string, len(updateableCols))
+	for n, col := range updateableCols {
+		translatedName := translateIdentifier(col.Name)
+		updateColNames[n] = fmt.Sprintf("%s", translatedName)
+	}
+	insertClause := strings.Join(insertColNames, ", ")
+
+	insertValuesColNames := make([]string, len(updateableCols))
+	for n, col := range updateableCols {
+		translatedName := translateIdentifier(col.Name)
+		insertValuesColNames[n] = fmt.Sprintf("s.%s", translatedName)
+	}
+	insertValuesClause := strings.Join(insertValuesColNames, ", ")
+
+	sql = fmt.Sprintf(`merge into %s as t using %s AS s on %s when matched then update set %s when not matched then insert (%s) values (%s) when not matched by source delete;`, targetTableName, tempTable.Name, matchClause, updateClause, insertClause, insertValuesClause)
+
+	fmt.Println(sql)
+
+	_, err = t.conn.Exec(ctx, sql)
+	if err != nil {
+		return fmt.Errorf("failed to merge table %s: %v", targetTableName, err)
+	}
+
+	return nil
+}
+
+func (t *PgsqlTarget) copyTableData2(ctx context.Context, table *schema.Table, reader dialect.TableDataReader) error {
+	tableName := translateIdentifier(table.Name)
+
+	cols := schema.UpdateableColumns(table)
 
 	colNames := make([]string, len(cols))
 	for n, col := range cols {
@@ -415,7 +588,7 @@ func (t *PgsqlTarget) copyTableData(ctx context.Context, table *schema.Table, re
 		return err
 	}
 
-	sql := fmt.Sprintf("truncate table %s cascade;", escapeIdentifier(targetTableName))
+	sql := fmt.Sprintf("truncate table %s cascade;", escapeIdentifier(tableName))
 	if _, err := t.conn.Exec(ctx, sql); err != nil {
 		return err
 	}
@@ -425,7 +598,7 @@ func (t *PgsqlTarget) copyTableData(ctx context.Context, table *schema.Table, re
 
 	copy := func() error {
 		if len(copyRows) > 0 {
-			count, err := t.conn.CopyFrom(ctx, pgx.Identifier{targetTableName}, colNames, pgx.CopyFromRows(copyRows))
+			count, err := t.conn.CopyFrom(ctx, pgx.Identifier{tableName}, colNames, pgx.CopyFromRows(copyRows))
 			if err != nil {
 				return err
 			}
@@ -1222,4 +1395,18 @@ func uuidFromBytes(b []byte) string {
 		b[8], b[9],
 		b[10], b[11], b[12], b[13], b[14], b[15],
 	)
+}
+
+func generateTempTableName() (string, error) {
+	randomBytes := make([]byte, 20)
+	_, err := rand.Read(randomBytes)
+	if err != nil {
+		return "", err
+	}
+
+	s := base64.URLEncoding.EncodeToString(randomBytes)
+	s = strings.TrimRight(s, "=")
+	tableName := "temp_" + s
+
+	return tableName, nil
 }

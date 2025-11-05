@@ -88,6 +88,15 @@ type ForeignKey struct {
 	ReferencedColumns []string
 }
 
+func PrimaryKeyColumns(table *Table) []string {
+	for _, idx := range table.Indexes {
+		if idx.IndexType == IndexTypePrimaryKey {
+			return idx.Columns
+		}
+	}
+	return nil
+}
+
 func UpdateableColumns(table *Table) []*Column {
 	cols := []*Column{}
 	for _, col := range table.Columns {
