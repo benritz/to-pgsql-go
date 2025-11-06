@@ -593,8 +593,11 @@ func (t *PgsqlTarget) copyTableData(ctx context.Context, table *schema.Table, re
 }
 
 func (t *PgsqlTarget) execSeqReset(ctx context.Context) error {
-	if _, err := t.conn.Exec(ctx, CreateSeqResetFnStatement()); err != nil {
-		return err
+	err := t.conn.QueryRow(ctx, "select 1 from pg_proc where proname = $1 and pronamespace = $2::regnamespace", "seq_field_max_value", "public").Scan()
+	if err == nil {
+		if _, err := t.conn.Exec(ctx, CreateSeqResetFnStatement()); err != nil {
+			return err
+		}
 	}
 
 	if _, err := t.conn.Exec(ctx, ExecSeqResetFnStatement()); err != nil {
