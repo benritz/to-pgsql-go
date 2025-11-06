@@ -303,7 +303,7 @@ func (t *PgsqlTarget) writeTableData(ctx context.Context, table *schema.Table, r
 	}
 
 	var copyRows [][]any
-	CopyBatchSize := 1000
+	CopyBatchSize := 10000
 
 	targetTableName := translateIdentifier(table.Name)
 
