@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 
 	"benritz/topgsql/internal/dialect"
 	"benritz/topgsql/internal/schema"
@@ -187,11 +188,6 @@ func (t *PgsqlTarget) CopyTables(ctx context.Context, tables []*schema.Table, re
 	}
 
 	if t.conn != nil {
-		if err := setReplicationOn(ctx, t.conn); err != nil {
-			return err
-		}
-		defer setReplicationOff(ctx, t.conn)
-
 		for _, table := range tables {
 			if err := t.copyTableData(ctx, table, reader, merge); err != nil {
 				return fmt.Errorf("copy data failed for %s: %v", table.Name, err)
@@ -303,7 +299,7 @@ func (t *PgsqlTarget) writeTableData(ctx context.Context, table *schema.Table, r
 	}
 
 	var copyRows [][]any
-	CopyBatchSize := 10000
+	CopyBatchSize := 1000
 
 	targetTableName := translateIdentifier(table.Name)
 
@@ -389,6 +385,9 @@ func (t *PgsqlTarget) writeSeqReset() {
 }
 
 func (t *PgsqlTarget) copyTableData(ctx context.Context, table *schema.Table, reader dialect.TableDataReader, merge bool) error {
+	// txErr is used by useReplication() defer func to commit or rollback the transaction
+	var txErr error
+
 	tablesMap, err := t.GetTables(ctx)
 	if err != nil {
 		return err
@@ -416,7 +415,7 @@ func (t *PgsqlTarget) copyTableData(ctx context.Context, table *schema.Table, re
 		}
 
 		var copyRows [][]any
-		CopyBatchSize := 1000
+		CopyBatchSize := 10000
 
 		copy := func() error {
 			if len(copyRows) > 0 {
@@ -475,6 +474,7 @@ func (t *PgsqlTarget) copyTableData(ctx context.Context, table *schema.Table, re
 
 	targetTable, ok := tablesMap[targetTableName]
 	if !ok {
+		// replication not needed when creating a new table
 		sql := CreateTableStatement(table, t.textType)
 		_, err := t.conn.Exec(ctx, sql)
 		if err != nil {
@@ -484,10 +484,50 @@ func (t *PgsqlTarget) copyTableData(ctx context.Context, table *schema.Table, re
 		return copyData(table, table, false)
 	}
 
+	// use replication mode to disable triggers and therefore forigen keys
+	// when connection pooling is used a transaction must be used to ensure the same connection
+	// is used (the pool mode should be transaction)
+	useReplication := func(ctx context.Context) error {
+		tx, err := t.conn.Begin(ctx)
+		if err != nil {
+			return err
+		}
+
+		usingRepl := false
+
+		defer func() {
+			if usingRepl {
+				setReplicationOff(ctx, t.conn)
+			}
+
+			if txErr == nil {
+				tx.Commit(ctx)
+			} else {
+				tx.Rollback(ctx)
+			}
+		}()
+
+		if err := setReplicationOn(ctx, t.conn); err != nil {
+			return err
+		}
+
+		usingRepl = true
+
+		return nil
+	}
+
 	pkColNames := schema.PrimaryKeyColumns(table)
 
 	if !merge || len(pkColNames) == 0 {
-		return copyData(table, targetTable, true)
+		if err = useReplication(ctx); err != nil {
+			return err
+		}
+
+		if txErr = copyData(table, targetTable, true); txErr != nil {
+			return txErr
+		}
+
+		return nil
 	}
 
 	getTempTableName := func() (string, error) {
@@ -505,11 +545,13 @@ func (t *PgsqlTarget) copyTableData(ctx context.Context, table *schema.Table, re
 		return "", fmt.Errorf("failed to create unique temp table name")
 	}
 
-	tempTable := *table
-	tempTable.Name, err = getTempTableName()
+	tempTableName, err := getTempTableName()
 	if err != nil {
 		return err
 	}
+
+	tempTable := *table
+	tempTable.Name = tempTableName
 
 	sql := CreateTableStatement(&tempTable, t.textType)
 	_, err = t.conn.Exec(ctx, sql)
@@ -533,6 +575,10 @@ func (t *PgsqlTarget) copyTableData(ctx context.Context, table *schema.Table, re
 	}
 
 	// merge
+	if err := useReplication(ctx); err != nil {
+		return err
+	}
+
 	matchColNames := make([]string, len(pkColNames))
 	for n, col := range pkColNames {
 		translatedName := translateIdentifier(col)
@@ -572,9 +618,11 @@ func (t *PgsqlTarget) copyTableData(ctx context.Context, table *schema.Table, re
 
 	sql = fmt.Sprintf("merge into %s as t using %s AS s on %s %s when not matched then insert (%s) values (%s)", targetTableName, tempTable.Name, matchClause, updateClause, insertClause, insertValuesClause)
 
-	tag, err := t.conn.Exec(ctx, sql)
-	if err != nil {
-		return fmt.Errorf("failed to merge table (insert/update) %s: %v", targetTableName, err)
+	var tag pgconn.CommandTag
+
+	tag, txErr = t.conn.Exec(ctx, sql)
+	if txErr != nil {
+		return fmt.Errorf("failed to merge table (insert/update) %s: %v", targetTableName, txErr)
 	}
 
 	fmt.Printf("Merged %d rows into %s\n", tag.RowsAffected(), targetTableName)
@@ -582,9 +630,9 @@ func (t *PgsqlTarget) copyTableData(ctx context.Context, table *schema.Table, re
 	// delete when not matched by source
 	sql = fmt.Sprintf("delete from %s as t where not exists (select 1 from %s as s where %s);", targetTableName, tempTable.Name, matchClause)
 
-	tag, err = t.conn.Exec(ctx, sql)
-	if err != nil {
-		return fmt.Errorf("failed to merge table (delete) %s: %v", targetTableName, err)
+	tag, txErr = t.conn.Exec(ctx, sql)
+	if txErr != nil {
+		return fmt.Errorf("failed to merge table (delete) %s: %v", targetTableName, txErr)
 	}
 
 	fmt.Printf("Deleted %d rows from %s\n", tag.RowsAffected(), targetTableName)
