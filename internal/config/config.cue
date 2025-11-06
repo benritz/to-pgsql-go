@@ -28,7 +28,7 @@ import "strings"
 	}
 
 	scripts?: {[...string & !=""]}
-	scripts_base_path?: string & !=""
+	scripts_path?: string & !=""
 }
 
 #Table: {

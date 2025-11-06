@@ -44,7 +44,7 @@ func configOptions(c *config.Root) ([]migrate.Option, error) {
 	opts = append(opts, migrate.WithIncludeProcs(c.Include.Procedures))
 	opts = append(opts, migrate.WithIncludeViews(c.Include.Views))
 	opts = append(opts, migrate.WithIncludeScripts(c.Include.Scripts))
-	opts = append(opts, migrate.WithScripts(c.Scripts, c.ScriptsBasePath))
+	opts = append(opts, migrate.WithScripts(c.Scripts, c.ScriptsPath))
 	opts = append(opts, migrate.WithTextType(c.Target.TextType))
 	opts = append(opts, migrate.WithDataBatchSize(c.Target.DataBatchSize))
 

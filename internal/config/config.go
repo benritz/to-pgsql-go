@@ -22,12 +22,12 @@ const (
 )
 
 type Root struct {
-	Source          SourceSection  `yaml:"source"`
-	Target          TargetSection  `yaml:"target"`
-	Include         IncludeSection `yaml:"include"`
-	Schema          SchemaSection  `yaml:"schema"`
-	Scripts         []string       `yaml:"scripts"`
-	ScriptsBasePath string         `yaml:"scripts_base_path"`
+	Source      SourceSection  `yaml:"source"`
+	Target      TargetSection  `yaml:"target"`
+	Include     IncludeSection `yaml:"include"`
+	Schema      SchemaSection  `yaml:"schema"`
+	Scripts     []string       `yaml:"scripts"`
+	ScriptsPath string         `yaml:"scripts_path"`
 }
 
 type SourceSection struct {
@@ -103,8 +103,8 @@ func LoadFile(path string) (*Root, error) {
 		return nil, err
 	}
 
-	if root.ScriptsBasePath == "" {
-		root.ScriptsBasePath = filepath.Dir(path)
+	if root.ScriptsPath == "" {
+		root.ScriptsPath = filepath.Dir(path)
 	}
 
 	return root, nil
@@ -140,7 +140,7 @@ func Load(r io.Reader) (*Root, error) {
 func expandEnv(cfg *Root) {
 	cfg.Source.URL = os.ExpandEnv(cfg.Source.URL)
 	cfg.Target.URL = os.ExpandEnv(cfg.Target.URL)
-	cfg.ScriptsBasePath = os.ExpandEnv(cfg.ScriptsBasePath)
+	cfg.ScriptsPath = os.ExpandEnv(cfg.ScriptsPath)
 }
 
 func BuildTables(tableDefs []TableDef, tablesMap map[string]*schema.Table) (map[string]*schema.Table, error) {
