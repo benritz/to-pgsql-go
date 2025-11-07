@@ -298,15 +298,15 @@ func (t *PgsqlTarget) writeTableData(ctx context.Context, table *schema.Table, r
 		return err
 	}
 
-	var copyRows [][]any
-	CopyBatchSize := 1000
+	var rows [][]any
+	PrintBatchSize := 1000
 
 	targetTableName := translateIdentifier(table.Name)
 
 	written := false
 
-	copy := func() error {
-		if len(copyRows) > 0 {
+	printRows := func() error {
+		if len(rows) > 0 {
 			if !written {
 				fmt.Fprintf(t.out, "-- %s\n", table.Name)
 				written = true
@@ -314,7 +314,7 @@ func (t *PgsqlTarget) writeTableData(ctx context.Context, table *schema.Table, r
 
 			fmt.Fprintf(t.out, "insert into %s values", targetTableName)
 
-			for n, row := range copyRows {
+			for n, row := range rows {
 				valStrs := make([]string, len(row))
 				for i, val := range row {
 					valStrs[i] = convertValueToString(val, table.Columns[i].DataType)
@@ -344,21 +344,21 @@ func (t *PgsqlTarget) writeTableData(ctx context.Context, table *schema.Table, r
 			break
 		}
 
-		copyRow := make([]any, len(table.Columns))
+		rowConverted := make([]any, len(table.Columns))
 
-		for i, data := range row {
-			copyRow[i] = ConvertValue(data, table.Columns[i].DataType)
+		for i, v := range row {
+			rowConverted[i] = ConvertValue(v, table.Columns[i].DataType)
 		}
 
-		copyRows = append(copyRows, copyRow)
+		rows = append(rows, rowConverted)
 
-		if len(copyRows) >= CopyBatchSize {
-			if err := copy(); err != nil {
+		if len(rows) >= PrintBatchSize {
+			if err := printRows(); err != nil {
 				reader.Close(ctx)
 				return err
 			}
 
-			copyRows = copyRows[:0]
+			rows = rows[:0]
 		}
 	}
 
@@ -366,7 +366,7 @@ func (t *PgsqlTarget) writeTableData(ctx context.Context, table *schema.Table, r
 		return err
 	}
 
-	if err := copy(); err != nil {
+	if err := printRows(); err != nil {
 		return err
 	}
 
@@ -487,41 +487,39 @@ func (t *PgsqlTarget) copyTableData(ctx context.Context, table *schema.Table, re
 	// use replication mode to disable triggers and therefore forigen keys
 	// when connection pooling is used a transaction must be used to ensure the same connection
 	// is used (the pool mode should be transaction)
-	useReplication := func(ctx context.Context) error {
+	// returns a function to commit/rollbackl the tranaction based on the txErr value and reset the replication setting
+	useReplication := func(ctx context.Context) (*func(), error) {
 		tx, err := t.conn.Begin(ctx)
 		if err != nil {
-			return err
+			return nil, err
 		}
 
-		usingRepl := false
+		if err := setReplicationOn(ctx, t.conn); err != nil {
+			tx.Rollback(ctx)
+			return nil, err
+		}
 
-		defer func() {
-			if usingRepl {
-				setReplicationOff(ctx, t.conn)
-			}
+		completeFn := func() {
+			setReplicationOff(ctx, t.conn)
 
 			if txErr == nil {
 				tx.Commit(ctx)
 			} else {
 				tx.Rollback(ctx)
 			}
-		}()
-
-		if err := setReplicationOn(ctx, t.conn); err != nil {
-			return err
 		}
 
-		usingRepl = true
-
-		return nil
+		return &completeFn, nil
 	}
 
 	pkColNames := schema.PrimaryKeyColumns(table)
 
 	if !merge || len(pkColNames) == 0 {
-		if err = useReplication(ctx); err != nil {
+		completeFn, err := useReplication(ctx)
+		if err != nil {
 			return err
 		}
+		defer (*completeFn)()
 
 		if txErr = copyData(table, targetTable, true); txErr != nil {
 			return txErr
@@ -575,9 +573,11 @@ func (t *PgsqlTarget) copyTableData(ctx context.Context, table *schema.Table, re
 	}
 
 	// merge
-	if err := useReplication(ctx); err != nil {
+	completeFn, err := useReplication(ctx)
+	if err != nil {
 		return err
 	}
+	defer (*completeFn)()
 
 	matchColNames := make([]string, len(pkColNames))
 	for n, col := range pkColNames {
