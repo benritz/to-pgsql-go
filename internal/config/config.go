@@ -56,7 +56,6 @@ type IncludeSection struct {
 	Triggers   bool        `yaml:"triggers"`
 	Procedures bool        `yaml:"procedures"`
 	Views      bool        `yaml:"views"`
-	Scripts    bool        `yaml:"scripts"`
 }
 
 type SchemaSection struct {

@@ -20,7 +20,6 @@ var (
 	incTriggers   bool
 	incProcedures bool
 	incViews      bool
-	incScripts    bool
 	textType      string
 	dataBatchSize int
 )
@@ -48,7 +47,6 @@ func configOptions(c *config.Root) ([]migrate.Option, error) {
 	opts = append(opts, migrate.WithIncludeTrigs(c.Include.Triggers))
 	opts = append(opts, migrate.WithIncludeProcs(c.Include.Procedures))
 	opts = append(opts, migrate.WithIncludeViews(c.Include.Views))
-	opts = append(opts, migrate.WithIncludeScripts(c.Include.Scripts))
 	opts = append(opts, migrate.WithScripts(c.Scripts, c.ScriptsPath))
 	opts = append(opts, migrate.WithTextType(c.Target.TextType))
 	opts = append(opts, migrate.WithDataBatchSize(c.Target.DataBatchSize))
@@ -67,7 +65,6 @@ func main() {
 	flag.BoolVar(&incProcedures, "incProcedures", false, "Include procedures")
 	flag.BoolVar(&incTriggers, "incTriggers", false, "Include triggers")
 	flag.BoolVar(&incViews, "incViews", false, "Include views")
-	flag.BoolVar(&incScripts, "incScripts", false, "Include scripts")
 	flag.IntVar(&dataBatchSize, "dataBatchSize", 0, "Batch size for data inserts")
 	flag.Parse()
 
@@ -129,9 +126,6 @@ func main() {
 	}
 	if _, ok := flagsSet["incViews"]; ok {
 		opts = append(opts, migrate.WithIncludeViews(incViews))
-	}
-	if _, ok := flagsSet["incScripts"]; ok {
-		opts = append(opts, migrate.WithIncludeScripts(incScripts))
 	}
 	if dataBatchSize != 0 {
 		opts = append(opts, migrate.WithDataBatchSize(dataBatchSize))

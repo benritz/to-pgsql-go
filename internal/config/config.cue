@@ -20,7 +20,6 @@ import "strings"
 		triggers?:   bool
 		procedures?: bool
 		views?:      bool
-		scripts?:    bool
 	}
 
 	schema?: {

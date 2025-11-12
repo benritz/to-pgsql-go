@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"benritz/topgsql/internal/config"
+	"benritz/topgsql/internal/dialect"
 	"benritz/topgsql/internal/dialect/mssql"
 	"benritz/topgsql/internal/dialect/pgsql"
 )
@@ -21,7 +22,6 @@ type Migration struct {
 	includeTrigs    bool
 	includeProcs    bool
 	includeViews    bool
-	includeScripts  bool
 	textType        string
 	dataBatchSize   int
 	tableDefs       []config.TableDef
@@ -66,6 +66,21 @@ func WithTargetURL(v string) Option {
 	}
 }
 
+func WithIncludeTables(v config.TableAction) (Option, error) {
+	var err error
+
+	if v != config.TableNone && v != config.TableCreate && v != config.TableRecreate {
+		err = fmt.Errorf("invalid table action: %s", v)
+		v = config.TableNone
+	}
+
+	opt := func(m *Migration) {
+		m.includeTables = v
+	}
+
+	return opt, err
+}
+
 func WithIncludeData(v config.DataAction) (Option, error) {
 	var err error
 
@@ -76,21 +91,6 @@ func WithIncludeData(v config.DataAction) (Option, error) {
 
 	opt := func(m *Migration) {
 		m.includeData = v
-	}
-
-	return opt, err
-}
-
-func WithIncludeTables(v config.TableAction) (Option, error) {
-	var err error
-
-	if v != config.TableNone && v != config.TableCreate && v != config.TableRecreate {
-		err = fmt.Errorf("invalid data mode: %s", v)
-		v = config.TableNone
-	}
-
-	opt := func(m *Migration) {
-		m.includeTables = v
 	}
 
 	return opt, err
@@ -120,12 +120,6 @@ func WithIncludeViews(v bool) Option {
 	}
 }
 
-func WithIncludeScripts(v bool) Option {
-	return func(m *Migration) {
-		m.includeScripts = v
-	}
-}
-
 func WithTextType(t string) Option {
 	return func(m *Migration) {
 		m.textType = t
@@ -148,7 +142,6 @@ func WithScripts(scripts []string, scriptsBasePath string) Option {
 	return func(m *Migration) {
 		m.scripts = scripts
 		m.scriptsBasePath = scriptsBasePath
-		m.includeScripts = len(scripts) > 0
 	}
 }
 
@@ -188,14 +181,27 @@ func (m Migration) Run(ctx context.Context) error {
 		})
 
 		if m.includeTables != config.TableNone {
-			if err := target.CreateTables(ctx, tables); err != nil {
+			overwrite := m.includeTables == config.TableRecreate
+			if err := target.CreateTables(ctx, tables, overwrite); err != nil {
 				return fmt.Errorf("failed to create table schema: %w", err)
 			}
 		}
 
 		if m.includeData != config.DataNone {
-			merge := m.includeData == config.DataMerge
-			if err := target.CopyTables(ctx, tables, reader, merge); err != nil {
+			var copyAction dialect.CopyAction
+
+			switch m.includeData {
+			case config.DataInsert:
+				copyAction = dialect.CopyInsert
+			case config.DataOverwrite:
+				copyAction = dialect.CopyOverwrite
+			case config.DataMerge:
+				copyAction = dialect.CopyMerge
+			default:
+				return fmt.Errorf("invalid data action")
+			}
+
+			if err := target.CopyTables(ctx, tables, reader, copyAction); err != nil {
 				return fmt.Errorf("failed to copy table data: %w", err)
 			}
 		}
@@ -251,7 +257,7 @@ func (m Migration) Run(ctx context.Context) error {
 		}
 	}
 
-	if m.includeScripts && len(m.scripts) > 0 {
+	if len(m.scripts) > 0 {
 		var paths []string
 
 		for _, script := range m.scripts {

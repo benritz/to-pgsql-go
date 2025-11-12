@@ -6,6 +6,12 @@ import (
 	"strings"
 )
 
+type CopyAction int
+
+const CopyInsert CopyAction = 1
+const CopyOverwrite CopyAction = 2
+const CopyMerge CopyAction = 3
+
 type TableDataReader interface {
 	Open(ctx context.Context, table string, cols []*schema.Column) error
 	ReadRow() ([]any, error)

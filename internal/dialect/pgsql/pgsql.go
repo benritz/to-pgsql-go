@@ -95,16 +95,20 @@ func (t *PgsqlTarget) GetTables(ctx context.Context) (map[string]*schema.Table, 
 	return t.tableCache, nil
 }
 
-func (t *PgsqlTarget) CreateTables(ctx context.Context, tables []*schema.Table) error {
+func (t *PgsqlTarget) CreateTables(
+	ctx context.Context,
+	tables []*schema.Table,
+	overwrite bool,
+) error {
 	if t.out != nil {
-		if err := t.writeTablesSchema(tables); err != nil {
+		if err := t.writeTablesSchema(tables, overwrite); err != nil {
 			return err
 		}
 		return nil
 	}
 
 	if t.conn != nil {
-		if err := t.createTablesSchema(ctx, tables); err != nil {
+		if err := t.createTablesSchema(ctx, tables, overwrite); err != nil {
 			return err
 		}
 		return nil
@@ -176,7 +180,12 @@ func (t *PgsqlTarget) CreateForeignKeys(ctx context.Context, keys []*schema.Fore
 	return nil
 }
 
-func (t *PgsqlTarget) CopyTables(ctx context.Context, tables []*schema.Table, reader dialect.TableDataReader, merge bool) error {
+func (t *PgsqlTarget) CopyTables(
+	ctx context.Context,
+	tables []*schema.Table,
+	reader dialect.TableDataReader,
+	action dialect.CopyAction,
+) error {
 	if t.out != nil {
 		for _, table := range tables {
 			if err := t.writeTableData(ctx, table, reader); err != nil {
@@ -189,7 +198,7 @@ func (t *PgsqlTarget) CopyTables(ctx context.Context, tables []*schema.Table, re
 
 	if t.conn != nil {
 		for _, table := range tables {
-			if err := t.copyTableData(ctx, table, reader, merge); err != nil {
+			if err := t.copyTableData(ctx, table, reader, true); err != nil {
 				return fmt.Errorf("copy data failed for %s: %v", table.Name, err)
 			}
 		}
@@ -475,7 +484,7 @@ func (t *PgsqlTarget) copyTableData(ctx context.Context, table *schema.Table, re
 	targetTable, ok := tablesMap[targetTableName]
 	if !ok {
 		// replication not needed when creating a new table
-		sql := CreateTableStatement(table, t.textType)
+		sql := CreateTableStatement(table, t.textType, false)
 		_, err := t.conn.Exec(ctx, sql)
 		if err != nil {
 			return fmt.Errorf("failed to create table %s in target database: %v", targetTableName, err)
@@ -551,7 +560,7 @@ func (t *PgsqlTarget) copyTableData(ctx context.Context, table *schema.Table, re
 	tempTable := *table
 	tempTable.Name = tempTableName
 
-	sql := CreateTableStatement(&tempTable, t.textType)
+	sql := CreateTableStatement(&tempTable, t.textType, false)
 	_, err = t.conn.Exec(ctx, sql)
 	if err != nil {
 		return fmt.Errorf("failed to create temp table: %v", err)
@@ -655,7 +664,7 @@ func (t *PgsqlTarget) execSeqReset(ctx context.Context) error {
 	return nil
 }
 
-func (t *PgsqlTarget) writeTablesSchema(tables []*schema.Table) error {
+func (t *PgsqlTarget) writeTablesSchema(tables []*schema.Table, overwrite bool) error {
 	fmt.Fprintf(t.out, "/* --------------------- TABLES --------------------- */\n\n")
 
 	if t.textType == "citext" {
@@ -663,7 +672,7 @@ func (t *PgsqlTarget) writeTablesSchema(tables []*schema.Table) error {
 	}
 
 	for _, table := range tables {
-		if err := t.writeTableSchema(table); err != nil {
+		if err := t.writeTableSchema(table, overwrite); err != nil {
 			return err
 		}
 	}
@@ -673,28 +682,45 @@ func (t *PgsqlTarget) writeTablesSchema(tables []*schema.Table) error {
 	return nil
 }
 
-func (t *PgsqlTarget) writeTableSchema(table *schema.Table) error {
-	drop := DropTableStatement(table)
-	create := CreateTableStatement(table, t.textType)
+func (t *PgsqlTarget) writeTableSchema(table *schema.Table, overwrite bool) error {
+	fmt.Fprintf(
+		t.out,
+		"/* -- %s -- */\n",
+		table.Name,
+	)
+
+	if overwrite {
+		drop := DropTableStatement(table)
+
+		fmt.Fprintf(
+			t.out,
+			"%s\n\n",
+			drop,
+		)
+	}
+
+	create := CreateTableStatement(table, t.textType, overwrite)
 
 	fmt.Fprintf(
 		t.out,
-		"/* -- %s -- */\n%s\n\n%s\n\n",
-		table.Name,
-		drop,
+		"%s\n\n",
 		create,
 	)
 
 	return nil
 }
 
-func (t *PgsqlTarget) createTablesSchema(ctx context.Context, tables []*schema.Table) error {
+func (t *PgsqlTarget) createTablesSchema(
+	ctx context.Context,
+	tables []*schema.Table,
+	overwrite bool,
+) error {
 	if _, err := t.conn.Exec(ctx, "create extension if not exists citext;\n\n"); err != nil {
 		return err
 	}
 
 	for _, table := range tables {
-		if err := t.createTableSchema(ctx, table); err != nil {
+		if err := t.createTableSchema(ctx, table, overwrite); err != nil {
 			return err
 		}
 	}
@@ -702,12 +728,23 @@ func (t *PgsqlTarget) createTablesSchema(ctx context.Context, tables []*schema.T
 	return nil
 }
 
-func (t *PgsqlTarget) createTableSchema(ctx context.Context, table *schema.Table) error {
-	sql := CreateTableStatement(table, t.textType)
-	_, err := t.conn.Exec(ctx, sql)
-	if err != nil {
+func (t *PgsqlTarget) createTableSchema(
+	ctx context.Context,
+	table *schema.Table,
+	overwrite bool,
+) error {
+	if overwrite {
+		sql := DropTableStatement(table)
+		if _, err := t.conn.Exec(ctx, sql); err != nil {
+			return fmt.Errorf("failed to drop table %s: %v", table.Name, err)
+		}
+	}
+
+	sql := CreateTableStatement(table, t.textType, overwrite)
+	if _, err := t.conn.Exec(ctx, sql); err != nil {
 		return fmt.Errorf("failed to create table %s: %v", table.Name, err)
 	}
+
 	return nil
 }
 
@@ -1162,7 +1199,11 @@ func DropTableStatement(table *schema.Table) string {
 	return fmt.Sprintf("drop table if exists %s;", table.Name)
 }
 
-func CreateTableStatement(table *schema.Table, textType string) string {
+func CreateTableStatement(
+	table *schema.Table,
+	textType string,
+	overwrite bool,
+) string {
 	columnDefs := ""
 
 	for i, column := range table.Columns {
@@ -1182,8 +1223,14 @@ func CreateTableStatement(table *schema.Table, textType string) string {
 		columnDefs += " null"
 	}
 
+	var ifExists = "if not exists "
+	if overwrite {
+		ifExists = ""
+	}
+
 	sql := fmt.Sprintf(
-		"create table %s\n(\n%s\n);",
+		"create table %s%s\n(\n%s\n);",
+		ifExists,
 		table.Name,
 		columnDefs,
 	)
