@@ -15,8 +15,8 @@ import (
 type Migration struct {
 	sourceURL       string
 	targetURL       string
-	includeData     config.DataMode
-	includeTables   bool
+	includeData     config.DataAction
+	includeTables   config.TableAction
 	includeFuncs    bool
 	includeTrigs    bool
 	includeProcs    bool
@@ -66,12 +66,12 @@ func WithTargetURL(v string) Option {
 	}
 }
 
-func WithIncludeData(v config.DataMode) (Option, error) {
+func WithIncludeData(v config.DataAction) (Option, error) {
 	var err error
 
-	if v != config.DataModeNone && v != config.DataModeOverwrite && v != config.DataModeMerge {
-		err = fmt.Errorf("invalid data mode: %s", v)
-		v = config.DataModeNone
+	if v != config.DataNone && v != config.DataInsert && v != config.DataOverwrite && v != config.DataMerge {
+		err = fmt.Errorf("invalid data action: %s", v)
+		v = config.DataNone
 	}
 
 	opt := func(m *Migration) {
@@ -81,10 +81,19 @@ func WithIncludeData(v config.DataMode) (Option, error) {
 	return opt, err
 }
 
-func WithIncludeTables(v bool) Option {
-	return func(m *Migration) {
+func WithIncludeTables(v config.TableAction) (Option, error) {
+	var err error
+
+	if v != config.TableNone && v != config.TableCreate && v != config.TableRecreate {
+		err = fmt.Errorf("invalid data mode: %s", v)
+		v = config.TableNone
+	}
+
+	opt := func(m *Migration) {
 		m.includeTables = v
 	}
+
+	return opt, err
 }
 
 func WithIncludeFuncs(v bool) Option {
@@ -161,7 +170,7 @@ func (m Migration) Run(ctx context.Context) error {
 		return fmt.Errorf("failed to create table data reader: %w", err)
 	}
 
-	if m.includeTables || m.includeData != "none" {
+	if m.includeTables != config.TableNone || m.includeData != config.DataNone {
 		tablesMap, err := source.GetTables(ctx)
 		if err != nil {
 			return err
@@ -178,20 +187,20 @@ func (m Migration) Run(ctx context.Context) error {
 			return strings.ToLower(tables[i].Name) < strings.ToLower(tables[j].Name)
 		})
 
-		if m.includeTables {
+		if m.includeTables != config.TableNone {
 			if err := target.CreateTables(ctx, tables); err != nil {
 				return fmt.Errorf("failed to create table schema: %w", err)
 			}
 		}
 
-		if m.includeData != config.DataModeNone {
-			merge := m.includeData == config.DataModeMerge
+		if m.includeData != config.DataNone {
+			merge := m.includeData == config.DataMerge
 			if err := target.CopyTables(ctx, tables, reader, merge); err != nil {
 				return fmt.Errorf("failed to copy table data: %w", err)
 			}
 		}
 
-		if m.includeTables {
+		if m.includeTables != config.TableNone {
 			if err := target.CreateConstraintsAndIndexes(ctx, tables); err != nil {
 				return fmt.Errorf("failed to create constraints and indexes: %w", err)
 			}

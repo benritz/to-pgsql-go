@@ -15,7 +15,7 @@ import "strings"
 
 	include?: {
 		data?:       *"none" | "none" | "overwrite" | "merge"
-		tables?:     bool
+		tables?:     *"none" | "create" | "recreate"
 		functions?:  bool
 		triggers?:   bool
 		procedures?: bool
@@ -39,20 +39,20 @@ import "strings"
 	indexes?: [...#Index]
 	foreign_keys?: [...#ForeignKey]
 
-	// ---- Intra-table validations ----
+	// intra-table validations
 	if columns != _|_ {
 		_#colMap: {for c in columns {"\(strings.ToLower(c.name))": true}}
 		_#uniqueCols?: len(_#colMap) == len(columns)
 	}
 
-	// Index columns must exist.
+	// index columns must exist
 	if columns != _|_ && indexes != _|_ {
 		_#colMap: {for c in columns {"\(strings.ToLower(c.name))": true}}
 		_#indexColsExist: [for ix in indexes for c in ix.columns {_#colMap[strings.ToLower(c)]}]
 		_#indexIncludeColsExist?: [for ix in indexes if ix.include_columns != _|_ for c in ix.include_columns {_#colMap[strings.ToLower(c)]}]
 	}
 
-	// Foreign key local columns must exist.
+	// foreign key local columns must exist
 	if columns != _|_ && foreign_keys != _|_ {
 		_#colMap: {for c in columns {"\(strings.ToLower(c.name))": true}}
 		_#fkLocalColsExist: [for fk in foreign_keys for c in fk.columns {_#colMap[strings.ToLower(c)]}]

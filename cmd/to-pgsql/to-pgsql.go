@@ -15,7 +15,7 @@ var (
 	sourceUrl     string
 	targetUrl     string
 	incData       string
-	incTables     bool
+	incTables     string
 	incFunctions  bool
 	incTriggers   bool
 	incProcedures bool
@@ -32,13 +32,18 @@ func configOptions(c *config.Root) ([]migrate.Option, error) {
 	opts = append(opts, migrate.WithTargetURL(c.Target.URL))
 	opts = append(opts, migrate.WithTableDefs(c.Schema.Tables))
 
-	opt, err := migrate.WithIncludeData(c.Include.Data)
+	opt, err := migrate.WithIncludeTables(c.Include.Tables)
 	if err != nil {
 		return opts, err
 	}
 	opts = append(opts, opt)
 
-	opts = append(opts, migrate.WithIncludeTables(c.Include.Tables))
+	opt, err = migrate.WithIncludeData(c.Include.Data)
+	if err != nil {
+		return opts, err
+	}
+	opts = append(opts, opt)
+
 	opts = append(opts, migrate.WithIncludeFuncs(c.Include.Functions))
 	opts = append(opts, migrate.WithIncludeTrigs(c.Include.Triggers))
 	opts = append(opts, migrate.WithIncludeProcs(c.Include.Procedures))
@@ -56,8 +61,8 @@ func main() {
 	flag.StringVar(&sourceUrl, "source", "", "Source database connection URL")
 	flag.StringVar(&targetUrl, "target", "", "Target file or database connection URL")
 	flag.StringVar(&textType, "textType", "citext", "How to convert the text column schema. Either text, citext or varchar (default).")
-	flag.StringVar(&incData, "incData", "none", "Include table data. Either none (default), overwrite or merge.")
-	flag.BoolVar(&incTables, "incTables", false, "Include tables schema")
+	flag.StringVar(&incTables, "incTables", "none", "Include tables schema. Either none (default), create or recreate")
+	flag.StringVar(&incData, "incData", "none", "Include table data. Either none (default), insert, overwrite or merge.")
 	flag.BoolVar(&incFunctions, "incFunctions", false, "Include functions")
 	flag.BoolVar(&incProcedures, "incProcedures", false, "Include procedures")
 	flag.BoolVar(&incTriggers, "incTriggers", false, "Include triggers")
@@ -98,10 +103,15 @@ func main() {
 		opts = append(opts, migrate.WithTextType(textType))
 	}
 	if _, ok := flagsSet["incTables"]; ok {
-		opts = append(opts, migrate.WithIncludeTables(incTables))
+		opt, err := migrate.WithIncludeTables(config.TableAction(incTables))
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "configuration error: %v\n", err)
+			os.Exit(1)
+		}
+		opts = append(opts, opt)
 	}
 	if _, ok := flagsSet["incData"]; ok {
-		opt, err := migrate.WithIncludeData(config.DataMode(incData))
+		opt, err := migrate.WithIncludeData(config.DataAction(incData))
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "configuration error: %v\n", err)
 			os.Exit(1)
