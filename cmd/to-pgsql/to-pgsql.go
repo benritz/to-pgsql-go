@@ -14,8 +14,8 @@ var (
 	configPath    string
 	sourceUrl     string
 	targetUrl     string
-	incData       string
 	incTables     string
+	incData       string
 	incFunctions  bool
 	incTriggers   bool
 	incProcedures bool

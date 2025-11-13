@@ -181,8 +181,8 @@ func (m Migration) Run(ctx context.Context) error {
 		})
 
 		if m.includeTables != config.TableNone {
-			overwrite := m.includeTables == config.TableRecreate
-			if err := target.CreateTables(ctx, tables, overwrite); err != nil {
+			recreate := m.includeTables == config.TableRecreate
+			if err := target.CreateTables(ctx, tables, recreate); err != nil {
 				return fmt.Errorf("failed to create table schema: %w", err)
 			}
 		}
@@ -207,7 +207,8 @@ func (m Migration) Run(ctx context.Context) error {
 		}
 
 		if m.includeTables != config.TableNone {
-			if err := target.CreateConstraintsAndIndexes(ctx, tables); err != nil {
+			recreate := m.includeTables == config.TableRecreate
+			if err := target.CreateConstraintsAndIndexes(ctx, tables, recreate); err != nil {
 				return fmt.Errorf("failed to create constraints and indexes: %w", err)
 			}
 		}

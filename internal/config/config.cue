@@ -14,8 +14,8 @@ import "strings"
 	}
 
 	include?: {
-		data?:       *"none" | "none" | "overwrite" | "merge"
 		tables?:     *"none" | "create" | "recreate"
+		data?:       *"none" | "none" | "insert" | "overwrite" | "merge"
 		functions?:  bool
 		triggers?:   bool
 		procedures?: bool

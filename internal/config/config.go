@@ -50,8 +50,8 @@ type TargetSection struct {
 }
 
 type IncludeSection struct {
-	Data       DataAction  `yaml:"data"`
 	Tables     TableAction `yaml:"tables"`
+	Data       DataAction  `yaml:"data"`
 	Functions  bool        `yaml:"functions"`
 	Triggers   bool        `yaml:"triggers"`
 	Procedures bool        `yaml:"procedures"`

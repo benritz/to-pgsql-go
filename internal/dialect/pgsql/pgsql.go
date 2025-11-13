@@ -98,17 +98,17 @@ func (t *PgsqlTarget) GetTables(ctx context.Context) (map[string]*schema.Table, 
 func (t *PgsqlTarget) CreateTables(
 	ctx context.Context,
 	tables []*schema.Table,
-	overwrite bool,
+	recreate bool,
 ) error {
 	if t.out != nil {
-		if err := t.writeTablesSchema(tables, overwrite); err != nil {
+		if err := t.writeTablesSchema(tables, recreate); err != nil {
 			return err
 		}
 		return nil
 	}
 
 	if t.conn != nil {
-		if err := t.createTablesSchema(ctx, tables, overwrite); err != nil {
+		if err := t.createTablesSchema(ctx, tables, recreate); err != nil {
 			return err
 		}
 		return nil
@@ -117,22 +117,60 @@ func (t *PgsqlTarget) CreateTables(
 	return nil
 }
 
-func (t *PgsqlTarget) CreateConstraintsAndIndexes(ctx context.Context, tables []*schema.Table) error {
+func (t *PgsqlTarget) CreateConstraintsAndIndexes(
+	ctx context.Context,
+	tables []*schema.Table,
+	recreate bool,
+) error {
 	if t.out != nil {
 		fmt.Fprintf(t.out, "/* --------------------- CONSTRAINTS + INDEXES --------------------- */\n\n")
 	}
 
+	var err error
+
+	var tablesMap map[string]*schema.Table
+	if !recreate {
+		tablesMap, err = t.GetTables(ctx)
+		if err != nil {
+			return err
+		}
+	}
+
 	for _, table := range tables {
-		if len(table.Indexes) > 0 {
-			if err := t.CreateIndexes(ctx, table.Indexes); err != nil {
+		indexes := table.Indexes
+
+		if !recreate {
+			fmt.Printf("create\n")
+			targetTable, ok := tablesMap[translateIdentifier(table.Name)]
+			if ok {
+				indexes = schema.MissingIndexes(table, targetTable)
+				fmt.Printf("missing indexes %s: %v\n", table.Name, indexes)
+			} else {
+				fmt.Printf("table not found in target\n")
+			}
+		} else {
+			fmt.Printf("recreate\n")
+		}
+
+		if len(indexes) > 0 {
+			if err = t.CreateIndexes(ctx, indexes); err != nil {
 				return err
 			}
 		}
 	}
 
 	for _, table := range tables {
-		if len(table.ForeignKeyes) > 0 {
-			if err := t.CreateForeignKeys(ctx, table.ForeignKeyes); err != nil {
+		keys := table.ForeignKeyes
+
+		if !recreate {
+			targetTable, ok := tablesMap[translateIdentifier(table.Name)]
+			if ok {
+				keys = schema.MissingForeignKeys(table, targetTable)
+			}
+		}
+
+		if len(keys) > 0 {
+			if err = t.CreateForeignKeys(ctx, keys); err != nil {
 				return err
 			}
 		}
@@ -187,10 +225,20 @@ func (t *PgsqlTarget) CopyTables(
 	action dialect.CopyAction,
 ) error {
 	if t.out != nil {
+		fmt.Fprint(t.out, "/* -- Table data -- */\n\n")
+
+		if action != dialect.CopyInsert {
+			fmt.Fprint(t.out, "set session_replication_role = 'replica';\n\n")
+		}
+
 		for _, table := range tables {
-			if err := t.writeTableData(ctx, table, reader); err != nil {
+			if err := t.writeTableData(ctx, table, reader, action); err != nil {
 				return err
 			}
+		}
+
+		if action != dialect.CopyInsert {
+			fmt.Fprint(t.out, "set session_replication_role = 'origin';\n\n")
 		}
 
 		t.writeSeqReset()
@@ -198,7 +246,7 @@ func (t *PgsqlTarget) CopyTables(
 
 	if t.conn != nil {
 		for _, table := range tables {
-			if err := t.copyTableData(ctx, table, reader, true); err != nil {
+			if err := t.copyTableData(ctx, table, reader, action); err != nil {
 				return fmt.Errorf("copy data failed for %s: %v", table.Name, err)
 			}
 		}
@@ -302,7 +350,12 @@ func (t *PgsqlTarget) CreateFunctions(ctx context.Context, functions []*schema.F
 	return nil
 }
 
-func (t *PgsqlTarget) writeTableData(ctx context.Context, table *schema.Table, reader dialect.TableDataReader) error {
+func (t *PgsqlTarget) writeTableData(
+	ctx context.Context,
+	table *schema.Table,
+	reader dialect.TableDataReader,
+	action dialect.CopyAction,
+) error {
 	if err := reader.Open(ctx, table.Name, table.Columns); err != nil {
 		return err
 	}
@@ -310,7 +363,7 @@ func (t *PgsqlTarget) writeTableData(ctx context.Context, table *schema.Table, r
 	var rows [][]any
 	PrintBatchSize := 1000
 
-	targetTableName := translateIdentifier(table.Name)
+	targetTableName := escapeIdentifier(translateIdentifier(table.Name))
 
 	written := false
 
@@ -318,6 +371,11 @@ func (t *PgsqlTarget) writeTableData(ctx context.Context, table *schema.Table, r
 		if len(rows) > 0 {
 			if !written {
 				fmt.Fprintf(t.out, "-- %s\n", table.Name)
+
+				if action != dialect.CopyInsert {
+					fmt.Fprintf(t.out, "truncate table %s cascade;\n", targetTableName)
+				}
+
 				written = true
 			}
 
@@ -393,7 +451,12 @@ func (t *PgsqlTarget) writeSeqReset() {
 	)
 }
 
-func (t *PgsqlTarget) copyTableData(ctx context.Context, table *schema.Table, reader dialect.TableDataReader, merge bool) error {
+func (t *PgsqlTarget) copyTableData(
+	ctx context.Context,
+	table *schema.Table,
+	reader dialect.TableDataReader,
+	action dialect.CopyAction,
+) error {
 	// txErr is used by useReplication() defer func to commit or rollback the transaction
 	var txErr error
 
@@ -483,17 +546,12 @@ func (t *PgsqlTarget) copyTableData(ctx context.Context, table *schema.Table, re
 
 	targetTable, ok := tablesMap[targetTableName]
 	if !ok {
-		// replication not needed when creating a new table
-		sql := CreateTableStatement(table, t.textType, false)
-		_, err := t.conn.Exec(ctx, sql)
-		if err != nil {
-			return fmt.Errorf("failed to create table %s in target database: %v", targetTableName, err)
-		}
-
-		return copyData(table, table, false)
+		// table missing, nothing to do
+		fmt.Printf("table missing, nothing to do: %s\n", table.Name)
+		return nil
 	}
 
-	// use replication mode to disable triggers and therefore forigen keys
+	// use replication to prevent triggers/foreign key issues
 	// when connection pooling is used a transaction must be used to ensure the same connection
 	// is used (the pool mode should be transaction)
 	// returns a function to commit/rollbackl the tranaction based on the txErr value and reset the replication setting
@@ -523,13 +581,35 @@ func (t *PgsqlTarget) copyTableData(ctx context.Context, table *schema.Table, re
 
 	pkColNames := schema.PrimaryKeyColumns(table)
 
-	if !merge || len(pkColNames) == 0 {
-		completeFn, err := useReplication(ctx)
-		if err != nil {
-			return err
-		}
-		defer (*completeFn)()
+	empty, err := isTableEmpty(ctx, t.conn, targetTableName)
+	if err != nil {
+		return err
+	}
 
+	if !empty && action == dialect.CopyInsert {
+		fmt.Printf("table insert, nothing to do: %s\n", table.Name)
+		return nil
+	}
+
+	// use replication to prevent triggers/foreign key issues
+	// data can be populated before target tables are populated
+	// data can be truncated and re-inserted
+	completeFn, err := useReplication(ctx)
+	if err != nil {
+		return err
+	}
+	defer (*completeFn)()
+
+	// emtpy table, just copy the data
+	if empty {
+		fmt.Printf("table empty: %s\n", table.Name)
+		return copyData(table, targetTable, false)
+	}
+
+	// overwrite, truncate data, copy data
+	// merge requires primary key, use overwrite if no primary key
+	if action == dialect.CopyOverwrite || len(pkColNames) == 0 {
+		fmt.Printf("table overwrite: %s\n", table.Name)
 		if txErr = copyData(table, targetTable, true); txErr != nil {
 			return txErr
 		}
@@ -537,6 +617,7 @@ func (t *PgsqlTarget) copyTableData(ctx context.Context, table *schema.Table, re
 		return nil
 	}
 
+	// merge, use replication, merge new+existing rows, delete rows not in source
 	getTempTableName := func() (string, error) {
 		retries := 10
 		for retries > 0 {
@@ -580,13 +661,6 @@ func (t *PgsqlTarget) copyTableData(ctx context.Context, table *schema.Table, re
 	if err := copyData(table, &tempTable, false); err != nil {
 		return err
 	}
-
-	// merge
-	completeFn, err := useReplication(ctx)
-	if err != nil {
-		return err
-	}
-	defer (*completeFn)()
 
 	matchColNames := make([]string, len(pkColNames))
 	for n, col := range pkColNames {
@@ -664,7 +738,7 @@ func (t *PgsqlTarget) execSeqReset(ctx context.Context) error {
 	return nil
 }
 
-func (t *PgsqlTarget) writeTablesSchema(tables []*schema.Table, overwrite bool) error {
+func (t *PgsqlTarget) writeTablesSchema(tables []*schema.Table, recreate bool) error {
 	fmt.Fprintf(t.out, "/* --------------------- TABLES --------------------- */\n\n")
 
 	if t.textType == "citext" {
@@ -672,7 +746,7 @@ func (t *PgsqlTarget) writeTablesSchema(tables []*schema.Table, overwrite bool) 
 	}
 
 	for _, table := range tables {
-		if err := t.writeTableSchema(table, overwrite); err != nil {
+		if err := t.writeTableSchema(table, recreate); err != nil {
 			return err
 		}
 	}
@@ -682,14 +756,14 @@ func (t *PgsqlTarget) writeTablesSchema(tables []*schema.Table, overwrite bool) 
 	return nil
 }
 
-func (t *PgsqlTarget) writeTableSchema(table *schema.Table, overwrite bool) error {
+func (t *PgsqlTarget) writeTableSchema(table *schema.Table, recreate bool) error {
 	fmt.Fprintf(
 		t.out,
 		"/* -- %s -- */\n",
 		table.Name,
 	)
 
-	if overwrite {
+	if recreate {
 		drop := DropTableStatement(table)
 
 		fmt.Fprintf(
@@ -699,7 +773,7 @@ func (t *PgsqlTarget) writeTableSchema(table *schema.Table, overwrite bool) erro
 		)
 	}
 
-	create := CreateTableStatement(table, t.textType, overwrite)
+	create := CreateTableStatement(table, t.textType, recreate)
 
 	fmt.Fprintf(
 		t.out,
@@ -713,14 +787,14 @@ func (t *PgsqlTarget) writeTableSchema(table *schema.Table, overwrite bool) erro
 func (t *PgsqlTarget) createTablesSchema(
 	ctx context.Context,
 	tables []*schema.Table,
-	overwrite bool,
+	recreate bool,
 ) error {
 	if _, err := t.conn.Exec(ctx, "create extension if not exists citext;\n\n"); err != nil {
 		return err
 	}
 
 	for _, table := range tables {
-		if err := t.createTableSchema(ctx, table, overwrite); err != nil {
+		if err := t.createTableSchema(ctx, table, recreate); err != nil {
 			return err
 		}
 	}
@@ -731,16 +805,16 @@ func (t *PgsqlTarget) createTablesSchema(
 func (t *PgsqlTarget) createTableSchema(
 	ctx context.Context,
 	table *schema.Table,
-	overwrite bool,
+	recreate bool,
 ) error {
-	if overwrite {
+	if recreate {
 		sql := DropTableStatement(table)
 		if _, err := t.conn.Exec(ctx, sql); err != nil {
 			return fmt.Errorf("failed to drop table %s: %v", table.Name, err)
 		}
 	}
 
-	sql := CreateTableStatement(table, t.textType, overwrite)
+	sql := CreateTableStatement(table, t.textType, recreate)
 	if _, err := t.conn.Exec(ctx, sql); err != nil {
 		return fmt.Errorf("failed to create table %s: %v", table.Name, err)
 	}
@@ -1196,13 +1270,13 @@ func fromDatatype(dt schema.DataType, textType string) string {
 }
 
 func DropTableStatement(table *schema.Table) string {
-	return fmt.Sprintf("drop table if exists %s;", table.Name)
+	return fmt.Sprintf("drop table if exists %s cascade;", table.Name)
 }
 
 func CreateTableStatement(
 	table *schema.Table,
 	textType string,
-	overwrite bool,
+	recreate bool,
 ) string {
 	columnDefs := ""
 
@@ -1224,7 +1298,7 @@ func CreateTableStatement(
 	}
 
 	var ifExists = "if not exists "
-	if overwrite {
+	if recreate {
 		ifExists = ""
 	}
 
@@ -1451,4 +1525,13 @@ func generateTempTableName() (string, error) {
 	tableName := "temp_" + s
 
 	return tableName, nil
+}
+
+func isTableEmpty(ctx context.Context, pool *pgx.Conn, table string) (bool, error) {
+	sql := fmt.Sprintf("SELECT NOT EXISTS (SELECT 1 FROM %s)", table)
+	var empty bool
+	if err := pool.QueryRow(ctx, sql).Scan(&empty); err != nil {
+		return false, err
+	}
+	return empty, nil
 }

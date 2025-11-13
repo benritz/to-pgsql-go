@@ -1,5 +1,11 @@
 package schema
 
+import (
+	"fmt"
+	"slices"
+	"strings"
+)
+
 type DataTypeKind string
 
 const (
@@ -88,6 +94,26 @@ type ForeignKey struct {
 	ReferencedColumns []string
 }
 
+type Function struct {
+	Name       string
+	Definition string
+}
+
+type Procedure struct {
+	Name       string
+	Definition string
+}
+
+type View struct {
+	Name       string
+	Definition string
+}
+
+type Trigger struct {
+	Name       string
+	Definition string
+}
+
 func PrimaryKeyColumns(table *Table) []string {
 	for _, idx := range table.Indexes {
 		if idx.IndexType == IndexTypePrimaryKey {
@@ -107,22 +133,34 @@ func UpdateableColumns(table *Table) []*Column {
 	return cols
 }
 
-type Function struct {
-	Name       string
-	Definition string
+func MissingForeignKeys(source, target *Table) []*ForeignKey {
+	var missing []*ForeignKey
+	for _, src := range source.ForeignKeyes {
+		exists := slices.ContainsFunc(
+			target.Indexes,
+			func(tgt *Index) bool { return strings.EqualFold(src.Name, tgt.Name) },
+		)
+		if !exists {
+			missing = append(missing, src)
+		}
+	}
+	return missing
 }
 
-type Procedure struct {
-	Name       string
-	Definition string
-}
-
-type View struct {
-	Name       string
-	Definition string
-}
-
-type Trigger struct {
-	Name       string
-	Definition string
+func MissingIndexes(source, target *Table) []*Index {
+	var missing []*Index
+	for _, src := range source.Indexes {
+		fmt.Printf("checking index %s\n", src.Name)
+		exists := slices.ContainsFunc(
+			target.Indexes,
+			func(tgt *Index) bool {
+				fmt.Printf("compare %s %s\n", src.Name, tgt.Name)
+				return strings.EqualFold(src.Name, tgt.Name)
+			},
+		)
+		if !exists {
+			missing = append(missing, src)
+		}
+	}
+	return missing
 }
