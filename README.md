@@ -13,6 +13,9 @@ Migrate a MS SQL Server database to PostgreSQL using a script or directly.
 
 ### CLI Parameters
 
+Use a configuration file for repeated migrations. 
+CLI parameters override configuration file parameters.
+
 - `-config` - Configuration file path
 - `-source` - Source database connection URL
 - `-target` - Target file or database connection URL
@@ -24,4 +27,57 @@ Migrate a MS SQL Server database to PostgreSQL using a script or directly.
 - `-incTriggers` - Include triggers (default: false)
 - `-incViews` - Include views (default: false)
 - `-dataBatchSize` - Batch size for data inserts 
+
+### Configuration File Parameters
+
+The configuration file supports the following structure:
+
+```yaml
+source:
+  url: "Source database connection URL formatted as sqlserver://${SOURCE_USER}:${SOURCE_PWD}@${SOURCE_HOST}?database=${SOURCE_DB}"
+
+target:
+  url: "Target database connection URL formatted as postgres://${TARGET_USER}:${TARGET_PWD}@${TARGET_HOST}/${TARGET_DB}"
+  text_type: "How to convert text columns (text, citext, varchar)"
+  data_batch_size: "Batch size for data inserts"
+
+include:
+  tables: "Include tables schema (none, create, recreate)"
+  data: "Include table data (none, insert, overwrite, merge)"
+  functions: "Include functions (true/false)"
+  triggers: "Include triggers (true/false)"
+  procedures: "Include procedures (true/false)"
+  views: "Include views (true/false)"
+
+schema:
+  tables:
+    - name: "Table name"
+      strategy: "Table strategy (replace, merge)"
+      columns:
+        - name: "Column name"
+          kind: "Column type"
+          length: "Column length"
+          precision: "Column precision"
+          scale: "Column scale"
+          timezone: "Timezone support (true/false)"
+          nullable: "Nullable (true/false)"
+          auto_increment: "Auto increment (true/false)"
+          computed: "Computed column (true/false)"
+          default: "Default value"
+      indexes:
+        - name: "Index name"
+          type: "Index type (non_unique, primary_key, unique_constraint, unique)"
+          columns: ["Column names"]
+          include_columns: ["Additional columns to include"]
+          filter: "Index filter condition"
+      foreign_keys:
+        - name: "Foreign key name"
+          columns: ["Local columns"]
+          referenced_table: "Referenced table name"
+          referenced_columns: ["Referenced columns"]
+
+scripts: ["Script file paths"]
+scripts_path: "Base path for script files"
+scripts_expand_env: "Expand environment variables in scripts (true/false)"
+```
 
