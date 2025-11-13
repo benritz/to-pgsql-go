@@ -142,6 +142,13 @@ func Load(r io.Reader) (*Root, error) {
 	}
 	expandEnv(&cfg)
 
+	if cfg.Include.Tables == "" {
+		cfg.Include.Tables = TableNone
+	}
+	if cfg.Include.Data == "" {
+		cfg.Include.Data = DataNone
+	}
+
 	return &cfg, nil
 }
 

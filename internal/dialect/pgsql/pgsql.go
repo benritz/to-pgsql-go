@@ -479,6 +479,8 @@ func (t *PgsqlTarget) copyTableData(
 		return err
 	}
 
+	var tempTable schema.Table
+
 	copyData := func(source, target *schema.Table, truncate bool) error {
 		tableName := translateIdentifier(target.Name)
 
@@ -498,6 +500,10 @@ func (t *PgsqlTarget) copyTableData(
 			if _, err := t.conn.Exec(ctx, sql); err != nil {
 				return err
 			}
+
+			if target != &tempTable {
+				fmt.Printf("%s - copy data - truncated\n", source.Name)
+			}
 		}
 
 		var copyRows [][]any
@@ -510,7 +516,9 @@ func (t *PgsqlTarget) copyTableData(
 					return err
 				}
 
-				fmt.Printf("Copied %d rows from %s into %s\n", count, source.Name, target.Name)
+				if target != &tempTable {
+					fmt.Printf("%s - copy data - copied %d rows\n", source.Name, count)
+				}
 			}
 
 			return nil
@@ -561,7 +569,7 @@ func (t *PgsqlTarget) copyTableData(
 	targetTable, ok := tablesMap[targetTableName]
 	if !ok {
 		// table missing, nothing to do
-		fmt.Printf("table missing, nothing to do: %s\n", table.Name)
+		fmt.Printf("%s: copy data - target table missing, nothing to do\n", table.Name)
 		return nil
 	}
 
@@ -601,7 +609,7 @@ func (t *PgsqlTarget) copyTableData(
 	}
 
 	if !empty && action == dialect.CopyInsert {
-		fmt.Printf("table insert, nothing to do: %s\n", table.Name)
+		fmt.Printf("%s - copy data - target table has data, nothing to do\n", table.Name)
 		return nil
 	}
 
@@ -616,14 +624,14 @@ func (t *PgsqlTarget) copyTableData(
 
 	// emtpy table, just copy the data
 	if empty {
-		fmt.Printf("table empty: %s\n", table.Name)
+		fmt.Printf("%s - copy data - target table empty, copying data\n", table.Name)
 		return copyData(table, targetTable, false)
 	}
 
 	// overwrite, truncate data, copy data
 	// merge requires primary key, use overwrite if no primary key
 	if action == dialect.CopyOverwrite || len(pkColNames) == 0 {
-		fmt.Printf("table overwrite: %s\n", table.Name)
+		fmt.Printf("%s - copy data - overwriting data\n", table.Name)
 		if txErr = copyData(table, targetTable, true); txErr != nil {
 			return txErr
 		}
@@ -652,7 +660,7 @@ func (t *PgsqlTarget) copyTableData(
 		return err
 	}
 
-	tempTable := *table
+	tempTable = *table
 	tempTable.Name = tempTableName
 
 	sql := CreateTableStatement(&tempTable, t.textType, false)
@@ -722,7 +730,7 @@ func (t *PgsqlTarget) copyTableData(
 		return fmt.Errorf("failed to merge table (insert/update) %s: %v", targetTableName, txErr)
 	}
 
-	fmt.Printf("Merged %d rows into %s\n", tag.RowsAffected(), targetTableName)
+	fmt.Printf("%s - copy data - merged %d rows\n", table.Name, tag.RowsAffected())
 
 	// delete when not matched by source
 	sql = fmt.Sprintf("delete from %s as t where not exists (select 1 from %s as s where %s);", targetTableName, tempTable.Name, matchClause)
@@ -732,7 +740,7 @@ func (t *PgsqlTarget) copyTableData(
 		return fmt.Errorf("failed to merge table (delete) %s: %v", targetTableName, txErr)
 	}
 
-	fmt.Printf("Deleted %d rows from %s\n", tag.RowsAffected(), targetTableName)
+	fmt.Printf("%s - copy data - deleted %d rows\n", table.Name, tag.RowsAffected())
 
 	return nil
 }
@@ -832,6 +840,8 @@ func (t *PgsqlTarget) createTableSchema(
 	if _, err := t.conn.Exec(ctx, sql); err != nil {
 		return fmt.Errorf("failed to create table %s: %v", table.Name, err)
 	}
+
+	fmt.Printf("%s - create table\n", table.Name)
 
 	return nil
 }
