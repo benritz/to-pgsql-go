@@ -1,0 +1,11 @@
+source:
+  url: "sqlserver://${SOURCE_USER}:${SOURCE_PWD}@${SOURCE_HOST}?database=${SOURCE_DB}"
+
+target:
+  url: "postgres://${TARGET_USER}:${TARGET_PWD}@${TARGET_HOST}/${TARGET_DB}"
+
+include:
+  tables: create 
+  data: overwrite
+
+

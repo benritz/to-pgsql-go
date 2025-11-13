@@ -4,7 +4,6 @@ import (
 	_ "embed"
 	"errors"
 	"fmt"
-	"io"
 
 	"cuelang.org/go/cue"
 	"cuelang.org/go/cue/cuecontext"
@@ -14,14 +13,14 @@ import (
 //go:embed config.cue
 var configCue string
 
-func validateBytes(raw []byte) error {
+func validateBytes(data []byte) error {
 	cueCtx := cuecontext.New()
 	schema := cueCtx.CompileString(configCue)
 	if schema.Err() != nil {
 		return fmt.Errorf("building config schema: %w", schema.Err())
 	}
 
-	yamlFile, err := yaml.Extract("<input>", raw)
+	yamlFile, err := yaml.Extract("<input>", data)
 	if err != nil {
 		return fmt.Errorf("decode yaml to cue: %w", err)
 	}
@@ -41,16 +40,4 @@ func validateBytes(raw []byte) error {
 		return fmt.Errorf("validation error: %w", err)
 	}
 	return nil
-}
-
-func validateReader(r io.ReadSeeker) error {
-	raw, err := io.ReadAll(r)
-	if err != nil {
-		return err
-	}
-	if err := validateBytes(raw); err != nil {
-		return err
-	}
-	_, err = r.Seek(0, io.SeekStart)
-	return err
 }

@@ -26,7 +26,7 @@ import "strings"
 		tables?: [...#Table]
 	}
 
-	scripts?: {[...string & !=""]}
+	scripts?: [...string & !=""]
 	scripts_path?: string & !=""
 }
 

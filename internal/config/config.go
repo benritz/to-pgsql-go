@@ -3,7 +3,6 @@ package config
 import (
 	"bytes"
 	"fmt"
-	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -100,46 +99,29 @@ type ForeignKeyDef struct {
 }
 
 func LoadFile(path string) (*Root, error) {
-	f, err := os.Open(path)
-	if err != nil {
-		return nil, err
-	}
-	defer f.Close()
-
-	root, err := Load(f)
+	data, err := os.ReadFile(path)
 	if err != nil {
 		return nil, err
 	}
 
-	if root.ScriptsPath == "" {
-		root.ScriptsPath = filepath.Dir(path)
+	baseDir := filepath.Dir(path)
+
+	data, err = ExpandIncludes(data, baseDir)
+	if err != nil {
+		return nil, fmt.Errorf("include expansion: %w", err)
 	}
 
-	return root, nil
-}
-
-func Load(r io.Reader) (*Root, error) {
-	var rs io.ReadSeeker
-	if seeker, ok := r.(io.ReadSeeker); ok {
-		rs = seeker
-	} else {
-		buf, err := io.ReadAll(r)
-		if err != nil {
-			return nil, err
-		}
-		rs = bytes.NewReader(buf)
-	}
-
-	if err := validateReader(rs); err != nil {
+	if err := validateBytes(data); err != nil {
 		return nil, err
 	}
 
 	var cfg Root
-	dec := yaml.NewDecoder(rs)
+	dec := yaml.NewDecoder(bytes.NewReader(data))
 	dec.KnownFields(true)
 	if err := dec.Decode(&cfg); err != nil {
 		return nil, err
 	}
+
 	expandEnv(&cfg)
 
 	if cfg.Include.Tables == "" {
@@ -147,6 +129,9 @@ func Load(r io.Reader) (*Root, error) {
 	}
 	if cfg.Include.Data == "" {
 		cfg.Include.Data = DataNone
+	}
+	if cfg.ScriptsPath == "" {
+		cfg.ScriptsPath = baseDir
 	}
 
 	return &cfg, nil

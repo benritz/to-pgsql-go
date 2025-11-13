@@ -1,0 +1,4 @@
+!include:generic.yaml
+
+scripts:
+  - specific/specific_1.sql
