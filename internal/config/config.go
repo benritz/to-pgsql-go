@@ -30,12 +30,13 @@ const (
 )
 
 type Root struct {
-	Source      SourceSection  `yaml:"source"`
-	Target      TargetSection  `yaml:"target"`
-	Include     IncludeSection `yaml:"include"`
-	Schema      SchemaSection  `yaml:"schema"`
-	Scripts     []string       `yaml:"scripts"`
-	ScriptsPath string         `yaml:"scripts_path"`
+	Source           SourceSection  `yaml:"source"`
+	Target           TargetSection  `yaml:"target"`
+	Include          IncludeSection `yaml:"include"`
+	Schema           SchemaSection  `yaml:"schema"`
+	Scripts          []string       `yaml:"scripts"`
+	ScriptsPath      string         `yaml:"scripts_path"`
+	ScriptsExpandEnv bool           `yaml:"scripts_expand_env"`
 }
 
 type SourceSection struct {

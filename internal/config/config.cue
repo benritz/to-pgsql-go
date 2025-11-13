@@ -28,6 +28,7 @@ import "strings"
 
 	scripts?: [...string & !=""]
 	scripts_path?: string & !=""
+  scripts_expand_env?: bool
 }
 
 #Table: {

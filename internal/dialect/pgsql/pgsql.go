@@ -288,7 +288,7 @@ func (t *PgsqlTarget) CreateViews(ctx context.Context, views []*schema.View) err
 	return nil
 }
 
-func (t *PgsqlTarget) CreateScripts(ctx context.Context, scripts []string) error {
+func (t *PgsqlTarget) CreateScripts(ctx context.Context, scripts []string, expandEnv bool) error {
 	if t.out != nil {
 		fmt.Fprintf(t.out, "/* --------------------- SCRIPTS --------------------- */\n\n")
 	}
@@ -299,9 +299,14 @@ func (t *PgsqlTarget) CreateScripts(ctx context.Context, scripts []string) error
 			return err
 		}
 
+		contents := string(content)
+		if expandEnv {
+			contents = os.ExpandEnv(contents)
+		}
+
 		name := filepath.Base(path)
 
-		if err := t.createScript(ctx, name, string(content)); err != nil {
+		if err := t.createScript(ctx, name, contents); err != nil {
 			return fmt.Errorf("failed to create script: %w", err)
 		}
 	}

@@ -14,19 +14,20 @@ import (
 )
 
 type Migration struct {
-	sourceURL       string
-	targetURL       string
-	includeData     config.DataAction
-	includeTables   config.TableAction
-	includeFuncs    bool
-	includeTrigs    bool
-	includeProcs    bool
-	includeViews    bool
-	textType        string
-	dataBatchSize   int
-	tableDefs       []config.TableDef
-	scripts         []string
-	scriptsBasePath string
+	sourceURL        string
+	targetURL        string
+	includeData      config.DataAction
+	includeTables    config.TableAction
+	includeFuncs     bool
+	includeTrigs     bool
+	includeProcs     bool
+	includeViews     bool
+	textType         string
+	dataBatchSize    int
+	tableDefs        []config.TableDef
+	scripts          []string
+	scriptsBasePath  string
+	scriptsExpandEnv bool
 }
 
 type Option func(*Migration)
@@ -138,10 +139,15 @@ func WithTableDefs(tableDefs []config.TableDef) Option {
 	}
 }
 
-func WithScripts(scripts []string, scriptsBasePath string) Option {
+func WithScripts(
+	scripts []string,
+	basePath string,
+	expandEnv bool,
+) Option {
 	return func(m *Migration) {
 		m.scripts = scripts
-		m.scriptsBasePath = scriptsBasePath
+		m.scriptsBasePath = basePath
+		m.scriptsExpandEnv = expandEnv
 	}
 }
 
@@ -268,7 +274,8 @@ func (m Migration) Run(ctx context.Context) error {
 			}
 			paths = append(paths, path)
 		}
-		if err := target.CreateScripts(ctx, paths); err != nil {
+
+		if err := target.CreateScripts(ctx, paths, m.scriptsExpandEnv); err != nil {
 			return fmt.Errorf("failed to create scripts: %w", err)
 		}
 	}
