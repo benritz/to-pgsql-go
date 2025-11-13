@@ -11,5 +11,17 @@ Migrate a MS SQL Server database to PostgreSQL using a script or directly.
 
 ## Usage
 
-to-pgsql -source [source database url] -target [postgreSQL database url]
+### CLI Parameters
+
+- `-config` - Configuration file path
+- `-source` - Source database connection URL
+- `-target` - Target file or database connection URL
+- `-textType` - How to convert the text column schema. Either text, citext or varchar (default: citext)
+- `-incTables` - Include tables schema. Either none (default), create or recreate
+- `-incData` - Include table data. Either none (default), insert, overwrite or merge
+- `-incFunctions` - Include functions (default: false)
+- `-incProcedures` - Include procedures (default: false)
+- `-incTriggers` - Include triggers (default: false)
+- `-incViews` - Include views (default: false)
+- `-dataBatchSize` - Batch size for data inserts 
 
