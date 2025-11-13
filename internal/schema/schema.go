@@ -136,9 +136,13 @@ func UpdateableColumns(table *Table) []*Column {
 func MissingForeignKeys(source, target *Table) []*ForeignKey {
 	var missing []*ForeignKey
 	for _, src := range source.ForeignKeyes {
+		fmt.Printf("checking key %s\n", src.Name)
 		exists := slices.ContainsFunc(
-			target.Indexes,
-			func(tgt *Index) bool { return strings.EqualFold(src.Name, tgt.Name) },
+			target.ForeignKeyes,
+			func(tgt *ForeignKey) bool {
+				fmt.Printf("compare %s %s\n", src.Name, tgt.Name)
+				return strings.EqualFold(src.Name, tgt.Name)
+			},
 		)
 		if !exists {
 			missing = append(missing, src)

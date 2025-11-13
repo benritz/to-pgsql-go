@@ -92,6 +92,26 @@ func (t *PgsqlTarget) GetTables(ctx context.Context) (map[string]*schema.Table, 
 		t.tableCache[translateIdentifier(table.Name)] = table
 	}
 
+	indexes, err := readIndexes(ctx, t.conn)
+	if err != nil {
+		return nil, err
+	}
+	for _, idx := range indexes {
+		if tbl, ok := t.tableCache[translateIdentifier(idx.Table)]; ok {
+			tbl.Indexes = append(tbl.Indexes, idx)
+		}
+	}
+
+	keys, err := readForeignKeys(ctx, t.conn)
+	if err != nil {
+		return nil, err
+	}
+	for _, fk := range keys {
+		if tbl, ok := t.tableCache[translateIdentifier(fk.Table)]; ok {
+			tbl.ForeignKeyes = append(tbl.ForeignKeyes, fk)
+		}
+	}
+
 	return t.tableCache, nil
 }
 
@@ -140,16 +160,10 @@ func (t *PgsqlTarget) CreateConstraintsAndIndexes(
 		indexes := table.Indexes
 
 		if !recreate {
-			fmt.Printf("create\n")
 			targetTable, ok := tablesMap[translateIdentifier(table.Name)]
 			if ok {
 				indexes = schema.MissingIndexes(table, targetTable)
-				fmt.Printf("missing indexes %s: %v\n", table.Name, indexes)
-			} else {
-				fmt.Printf("table not found in target\n")
 			}
-		} else {
-			fmt.Printf("recreate\n")
 		}
 
 		if len(indexes) > 0 {
@@ -1148,6 +1162,197 @@ ORDER BY c.relname ASC, c.oid ASC, a.attnum ASC`)
 	}
 
 	return tables, nil
+}
+
+func readIndexes(ctx context.Context, conn *pgx.Conn) ([]*schema.Index, error) {
+	q := `SELECT
+        tbl.relname AS table_name,
+        idx.relname AS index_name,
+        COALESCE(att.attname, '') AS column_name,
+        ord.n AS index_column_id,
+        (ord.n > ix.indnkeyatts) AS is_included,
+        ix.indisprimary AS is_primary,
+        COALESCE(con.contype = 'u', false) AS is_unique_constraint,
+        ix.indisunique AS is_unique,
+        COALESCE(pg_get_expr(ix.indpred, ix.indrelid), '') AS filter
+    FROM pg_index ix
+    JOIN pg_class tbl ON tbl.oid = ix.indrelid
+    JOIN pg_namespace ns ON ns.oid = tbl.relnamespace
+    JOIN pg_class idx ON idx.oid = ix.indexrelid
+    LEFT JOIN pg_constraint con ON con.conindid = ix.indexrelid AND con.contype IN ('u','p')
+    LEFT JOIN LATERAL unnest(ix.indkey) WITH ORDINALITY AS ord(attnum, n) ON TRUE
+    LEFT JOIN pg_attribute att ON att.attrelid = tbl.oid AND att.attnum = ord.attnum
+    WHERE tbl.relkind = 'r'
+      AND ns.nspname NOT IN ('pg_catalog','information_schema')
+    ORDER BY tbl.relname ASC, idx.relname ASC, ord.n ASC`
+
+	rows, err := conn.Query(ctx, q)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var (
+		result    []*schema.Index
+		cur       *schema.Index
+		lastTable string
+		lastIndex string
+	)
+
+	for rows.Next() {
+		var (
+			tableName, indexName, columnName string
+			indexColumnID                    int
+			isIncluded                       bool
+			isPrimary                        bool
+			isUniqueConstraint               bool
+			isUnique                         bool
+			filter                           string
+		)
+
+		if err := rows.Scan(
+			&tableName,
+			&indexName,
+			&columnName,
+			&indexColumnID,
+			&isIncluded,
+			&isPrimary,
+			&isUniqueConstraint,
+			&isUnique,
+			&filter,
+		); err != nil {
+			return nil, err
+		}
+
+		if indexName != lastIndex || tableName != lastTable {
+			if cur != nil {
+				result = append(result, cur)
+			}
+
+			var it schema.IndexType
+			switch {
+			case isPrimary:
+				it = schema.IndexTypePrimaryKey
+			case isUniqueConstraint:
+				it = schema.IndexTypeUniqueConstraint
+			case isUnique:
+				it = schema.IndexTypeUnique
+			default:
+				it = schema.IndexTypeNonUnique
+			}
+
+			cur = &schema.Index{
+				Table:          tableName,
+				Name:           indexName,
+				Columns:        []string{},
+				IncludeColumns: []string{},
+				Filter:         strings.TrimSpace(filter),
+				IndexType:      it,
+			}
+
+			lastTable = tableName
+			lastIndex = indexName
+		}
+
+		if columnName != "" {
+			if isIncluded {
+				cur.IncludeColumns = append(cur.IncludeColumns, columnName)
+			} else {
+				cur.Columns = append(cur.Columns, columnName)
+			}
+		}
+	}
+
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+
+	if cur != nil {
+		result = append(result, cur)
+	}
+
+	return result, nil
+}
+
+func readForeignKeys(ctx context.Context, conn *pgx.Conn) ([]*schema.ForeignKey, error) {
+	q := `SELECT
+        c.conname AS key_name,
+        pt.relname AS parent_table,
+        pcol.attname AS parent_column,
+        rt.relname AS referenced_table,
+        rcol.attname AS referenced_column,
+        ord.n AS constraint_column_id
+    FROM pg_constraint c
+    JOIN pg_class pt ON pt.oid = c.conrelid
+    JOIN pg_namespace ns ON ns.oid = pt.relnamespace
+    JOIN pg_class rt ON rt.oid = c.confrelid
+    JOIN LATERAL unnest(c.conkey) WITH ORDINALITY AS ord(attnum, n) ON TRUE
+    JOIN pg_attribute pcol ON pcol.attrelid = pt.oid AND pcol.attnum = ord.attnum
+    JOIN LATERAL unnest(c.confkey) WITH ORDINALITY AS ord2(attnum, n) ON ord2.n = ord.n
+    JOIN pg_attribute rcol ON rcol.attrelid = rt.oid AND rcol.attnum = ord2.attnum
+    WHERE c.contype = 'f'
+      AND ns.nspname NOT IN ('pg_catalog','information_schema')
+    ORDER BY pt.relname ASC, c.oid ASC, ord.n ASC`
+
+	rows, err := conn.Query(ctx, q)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var (
+		result                    []*schema.ForeignKey
+		curKey                    string
+		curParent, curRef         string
+		curParentCols, curRefCols []string
+	)
+
+	for rows.Next() {
+		var (
+			keyName, pTable, pColumn, rTable, rColumn string
+			pos                                       int
+		)
+		if err := rows.Scan(&keyName, &pTable, &pColumn, &rTable, &rColumn, &pos); err != nil {
+			return nil, err
+		}
+
+		if keyName != curKey {
+			if curKey != "" {
+				result = append(result, &schema.ForeignKey{
+					Name:              curKey,
+					Table:             curParent,
+					Columns:           curParentCols,
+					ReferencedTable:   curRef,
+					ReferencedColumns: curRefCols,
+				})
+			}
+
+			curKey = keyName
+			curParent = pTable
+			curRef = rTable
+			curParentCols = []string{}
+			curRefCols = []string{}
+		}
+
+		curParentCols = append(curParentCols, pColumn)
+		curRefCols = append(curRefCols, rColumn)
+	}
+
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+
+	if curKey != "" {
+		result = append(result, &schema.ForeignKey{
+			Name:              curKey,
+			Table:             curParent,
+			Columns:           curParentCols,
+			ReferencedTable:   curRef,
+			ReferencedColumns: curRefCols,
+		})
+	}
+
+	return result, nil
 }
 
 func toDataType(baseType string, maxLength, precision, scale int, isAutoInc bool) schema.DataType {
