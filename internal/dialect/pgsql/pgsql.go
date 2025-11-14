@@ -78,7 +78,7 @@ func (t *PgsqlTarget) Close(ctx context.Context) {
 }
 
 func (t *PgsqlTarget) GetTables(ctx context.Context) (map[string]*schema.Table, error) {
-	if t.tableCache != nil {
+	if t.conn == nil || t.tableCache != nil {
 		return t.tableCache, nil
 	}
 
@@ -889,7 +889,7 @@ func (t *PgsqlTarget) createIndex(ctx context.Context, index *schema.Index) erro
 	sql := CreateIndexStatement(index)
 	_, err := t.conn.Exec(ctx, sql)
 	if err != nil {
-		return fmt.Errorf("failed to create index %v: %v", index, err)
+		return fmt.Errorf("failed to create index %v - %s: %v", index, sql, err)
 	}
 
 	return nil
@@ -928,7 +928,7 @@ func (t *PgsqlTarget) createForeignKey(ctx context.Context, key *schema.ForeignK
 	sql := CreateForeignKeyStatement(key)
 	_, err := t.conn.Exec(ctx, sql)
 	if err != nil {
-		return fmt.Errorf("failed to create foreign key %v: %v", key, err)
+		return fmt.Errorf("failed to create foreign key %v - %s: %v", key, sql, err)
 	}
 
 	return nil
@@ -1752,10 +1752,10 @@ func generateTempTableName() (string, error) {
 	return tableName, nil
 }
 
-func isTableEmpty(ctx context.Context, pool *pgx.Conn, table string) (bool, error) {
+func isTableEmpty(ctx context.Context, conn *pgx.Conn, table string) (bool, error) {
 	sql := fmt.Sprintf("select not exists (select 1 from %s)", table)
 	var empty bool
-	if err := pool.QueryRow(ctx, sql).Scan(&empty); err != nil {
+	if err := conn.QueryRow(ctx, sql).Scan(&empty); err != nil {
 		return false, err
 	}
 	return empty, nil
