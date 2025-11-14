@@ -3,6 +3,8 @@ package dialect
 import (
 	"benritz/topgsql/internal/schema"
 	"context"
+	"os"
+	"regexp"
 	"strings"
 )
 
@@ -25,4 +27,19 @@ func StripNull(s string) string {
 		}
 		return r
 	}, s)
+}
+
+var envVarPattern = regexp.MustCompile(`\{\{\s*Env\s*:\s*([A-Za-z_][A-Za-z0-9_]*)\s*\}\}`)
+
+// replace {{Env:XYZ}} with the value of the environment variable XYZ
+func ExpandEnvMarkers(s string) string {
+	return envVarPattern.ReplaceAllStringFunc(s, func(m string) string {
+		sub := envVarPattern.FindStringSubmatch(m)
+		if len(sub) == 2 {
+			if v, ok := os.LookupEnv(sub[1]); ok {
+				return v
+			}
+		}
+		return m
+	})
 }

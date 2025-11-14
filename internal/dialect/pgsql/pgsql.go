@@ -301,7 +301,7 @@ func (t *PgsqlTarget) CreateScripts(ctx context.Context, scripts []string, expan
 
 		contents := string(content)
 		if expandEnv {
-			contents = os.ExpandEnv(contents)
+			contents = dialect.ExpandEnvMarkers(contents)
 		}
 
 		name := filepath.Base(path)
