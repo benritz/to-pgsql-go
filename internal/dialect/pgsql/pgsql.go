@@ -751,10 +751,15 @@ func (t *PgsqlTarget) copyTableData(
 }
 
 func (t *PgsqlTarget) execSeqReset(ctx context.Context) error {
-	err := t.conn.QueryRow(ctx, "select 1 from pg_proc where proname = $1 and pronamespace = $2::regnamespace", "seq_field_max_value", "public").Scan()
-	if err != nil {
+	var missing bool
+	sql := "select not exists (select 1 from pg_proc where proname = $1 and pronamespace = $2::regnamespace)"
+	if err := t.conn.QueryRow(ctx, sql, "seq_field_max_value", "public").Scan(&missing); err != nil {
+		return fmt.Errorf("failed to check seq_field_max_value function: %v", err)
+	}
+
+	if missing {
 		if _, err := t.conn.Exec(ctx, CreateSeqResetFnStatement()); err != nil {
-			return fmt.Errorf("failed to check seq_field_max_value sequence: %v", err)
+			return fmt.Errorf("failed to create seq_field_max_value function: %v", err)
 		}
 	}
 
@@ -1748,7 +1753,7 @@ func generateTempTableName() (string, error) {
 }
 
 func isTableEmpty(ctx context.Context, pool *pgx.Conn, table string) (bool, error) {
-	sql := fmt.Sprintf("SELECT NOT EXISTS (SELECT 1 FROM %s)", table)
+	sql := fmt.Sprintf("select not exists (select 1 from %s)", table)
 	var empty bool
 	if err := pool.QueryRow(ctx, sql).Scan(&empty); err != nil {
 		return false, err
