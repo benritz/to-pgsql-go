@@ -193,6 +193,7 @@ func (m Migration) Run(ctx context.Context) error {
 			}
 			if err := target.CreateConstraintsAndIndexes(ctx, tables, recreate); err != nil {
 				return fmt.Errorf("failed to create constraints and indexes: %w", err)
+			}
 		}
 
 		if m.includeData != config.DataNone {
