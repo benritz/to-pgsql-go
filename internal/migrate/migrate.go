@@ -191,6 +191,8 @@ func (m Migration) Run(ctx context.Context) error {
 			if err := target.CreateTables(ctx, tables, recreate); err != nil {
 				return fmt.Errorf("failed to create table schema: %w", err)
 			}
+			if err := target.CreateConstraintsAndIndexes(ctx, tables, recreate); err != nil {
+				return fmt.Errorf("failed to create constraints and indexes: %w", err)
 		}
 
 		if m.includeData != config.DataNone {
@@ -212,12 +214,13 @@ func (m Migration) Run(ctx context.Context) error {
 			}
 		}
 
-		if m.includeTables != config.TableNone {
-			recreate := m.includeTables == config.TableRecreate
-			if err := target.CreateConstraintsAndIndexes(ctx, tables, recreate); err != nil {
-				return fmt.Errorf("failed to create constraints and indexes: %w", err)
-			}
-		}
+		// TODO - add option to defer index/key creation until after data load
+		// if m.includeTables != config.TableNone {
+		// 	recreate := m.includeTables == config.TableRecreate
+		// 	if err := target.CreateConstraintsAndIndexes(ctx, tables, recreate); err != nil {
+		// 		return fmt.Errorf("failed to create constraints and indexes: %w", err)
+		// 	}
+		// }
 	}
 
 	if m.includeViews {
