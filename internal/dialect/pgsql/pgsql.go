@@ -754,12 +754,12 @@ func (t *PgsqlTarget) execSeqReset(ctx context.Context) error {
 	err := t.conn.QueryRow(ctx, "select 1 from pg_proc where proname = $1 and pronamespace = $2::regnamespace", "seq_field_max_value", "public").Scan()
 	if err != nil {
 		if _, err := t.conn.Exec(ctx, CreateSeqResetFnStatement()); err != nil {
-			return err
+			return fmt.Errorf("failed to check seq_field_max_value sequence: %v", err)
 		}
 	}
 
 	if _, err := t.conn.Exec(ctx, ExecSeqResetFnStatement()); err != nil {
-		return err
+		return fmt.Errorf("failed reset sequence values: %v", err)
 	}
 
 	return nil
