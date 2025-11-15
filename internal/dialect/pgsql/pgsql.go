@@ -526,6 +526,8 @@ func (t *PgsqlTarget) copyTableData(
 				if target != &tempTable {
 					fmt.Printf("%s - copy data - copied %d rows\n", source.Name, count)
 				}
+				t.conn.QueryRow(ctx, fmt.Sprintf("select count(*) from %s", tableName)).Scan(&count)
+				fmt.Printf("%s - count %d", source.Name, count)
 			}
 
 			return nil
