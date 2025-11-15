@@ -516,6 +516,8 @@ func (t *PgsqlTarget) copyTableData(
 
 		copy := func() error {
 			if len(copyRows) > 0 {
+				fmt.Printf("%s - copy columns %v\n", source.Name, colNames)
+
 				count, err := t.conn.CopyFrom(ctx, pgx.Identifier{tableName}, colNames, pgx.CopyFromRows(copyRows))
 				if err != nil {
 					return err
