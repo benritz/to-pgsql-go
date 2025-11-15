@@ -1700,6 +1700,7 @@ func (t *PgsqlTarget) VerifyDataIntegrity(ctx context.Context, tables []*schema.
 			if err := t.conn.QueryRow(ctx, sql).Scan(&missingCount); err != nil {
 				return nil, fmt.Errorf("data integrity check failed - %s -> %s: %v", fk.Table, fk.ReferencedTable, err)
 			}
+
 			if missingCount > 0 {
 				violations = append(violations,
 					fmt.Sprintf(

@@ -248,10 +248,11 @@ func (m Migration) Run(ctx context.Context) error {
 			if len(violations) > 0 {
 				fmt.Println("data integrity - failed")
 				for _, p := range violations {
-					fmt.Printf("verify data - %s\n", p)
+					fmt.Printf("data integrity - %s\n", p)
 				}
+			} else {
+				fmt.Println("data integrity - passed")
 			}
-			fmt.Println("data integrity - passed")
 		}
 	}
 
