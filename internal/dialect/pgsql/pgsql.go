@@ -638,6 +638,8 @@ func (t *PgsqlTarget) copyTableData(
 		if txErr = copyData(table, targetTable, false); txErr != nil {
 			return txErr
 		}
+
+		return nil
 	}
 
 	// overwrite, truncate data, copy data
