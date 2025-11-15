@@ -21,7 +21,6 @@ var (
 	incProcedures bool
 	incViews      bool
 	textType      string
-	dataBatchSize int
 )
 
 func configOptions(c *config.Root) ([]migrate.Option, error) {
@@ -49,14 +48,13 @@ func configOptions(c *config.Root) ([]migrate.Option, error) {
 	opts = append(opts, migrate.WithIncludeViews(c.Include.Views))
 	opts = append(opts, migrate.WithScripts(c.Scripts, c.ScriptsPath, c.ScriptsExpandEnv))
 	opts = append(opts, migrate.WithTextType(c.Target.TextType))
-	opts = append(opts, migrate.WithDataBatchSize(c.Target.DataBatchSize))
 	opts = append(opts, migrate.WithConstraintsAfterData(c.Target.ConstraintsAfterData))
 
 	return opts, nil
 }
 
 func main() {
-	flag.StringVar(&configPath, "config", "", "Config file")
+	flag.StringVar(&configPath, "config", "", "Configuration file")
 	flag.StringVar(&sourceUrl, "source", "", "Source database connection URL")
 	flag.StringVar(&targetUrl, "target", "", "Target file or database connection URL")
 	flag.StringVar(&textType, "textType", "citext", "How to convert the text column schema. Either text, citext or varchar (default).")
@@ -66,7 +64,6 @@ func main() {
 	flag.BoolVar(&incProcedures, "incProcedures", false, "Include procedures")
 	flag.BoolVar(&incTriggers, "incTriggers", false, "Include triggers")
 	flag.BoolVar(&incViews, "incViews", false, "Include views")
-	flag.IntVar(&dataBatchSize, "dataBatchSize", 0, "Batch size for data inserts")
 	flag.Parse()
 
 	flagsSet := make(map[string]struct{})
@@ -127,9 +124,6 @@ func main() {
 	}
 	if _, ok := flagsSet["incViews"]; ok {
 		opts = append(opts, migrate.WithIncludeViews(incViews))
-	}
-	if dataBatchSize != 0 {
-		opts = append(opts, migrate.WithDataBatchSize(dataBatchSize))
 	}
 
 	ctx := context.Background()
