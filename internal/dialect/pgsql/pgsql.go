@@ -588,8 +588,11 @@ func (t *PgsqlTarget) copyTableData(
 			return nil, err
 		}
 
+		fmt.Println("trans begin")
+
 		if err := setReplicationOn(ctx, t.conn); err != nil {
 			tx.Rollback(ctx)
+			fmt.Println("repl on failed, trans rollback")
 			return nil, err
 		}
 
@@ -598,8 +601,10 @@ func (t *PgsqlTarget) copyTableData(
 
 			if txErr == nil {
 				tx.Commit(ctx)
+				fmt.Println("trans commit")
 			} else {
 				tx.Rollback(ctx)
+				fmt.Println("trans rollback")
 			}
 		}
 
@@ -630,7 +635,9 @@ func (t *PgsqlTarget) copyTableData(
 	// emtpy table, just copy the data
 	if empty {
 		fmt.Printf("%s - copy data - target table empty, copying data\n", table.Name)
-		return copyData(table, targetTable, false)
+		if txErr = copyData(table, targetTable, false); txErr != nil {
+			return txErr
+		}
 	}
 
 	// overwrite, truncate data, copy data
