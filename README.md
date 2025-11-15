@@ -17,6 +17,7 @@ Use a configuration file for repeated migrations.
 CLI parameters override configuration file parameters.
 
 - `-config` - Configuration file path
+- `-configSchema` - Print the configuration CUE schema and exit
 - `-source` - Source database connection URL
 - `-target` - Target file or database connection URL
 - `-textType` - How to convert the text column schema. Either text, citext or varchar (default: citext)

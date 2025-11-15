@@ -22,6 +22,7 @@ var (
 	incViews      bool
 	textType      string
 	verifyData    bool
+	configSchema  bool
 )
 
 func configOptions(c *config.Root) ([]migrate.Option, error) {
@@ -69,7 +70,13 @@ func main() {
 	flag.BoolVar(&incProcedures, "incProcedures", false, "Include procedures")
 	flag.BoolVar(&incTriggers, "incTriggers", false, "Include triggers")
 	flag.BoolVar(&incViews, "incViews", false, "Include views")
+	flag.BoolVar(&configSchema, "configSchema", false, "Print the configuration CUE schema and exit")
 	flag.Parse()
+
+	if configSchema {
+		fmt.Print(config.Schema())
+		return
+	}
 
 	flagsSet := make(map[string]struct{})
 	flag.Visit(func(f *flag.Flag) {

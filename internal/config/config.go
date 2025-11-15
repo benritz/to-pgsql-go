@@ -441,3 +441,5 @@ func boolVal(p *bool) bool {
 	}
 	return *p
 }
+
+func Schema() string { return configCue }
