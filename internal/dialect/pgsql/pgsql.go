@@ -1661,6 +1661,62 @@ func ExecSeqResetFnStatement() string {
 	return "select relname, setval(oid, seq_field_max_value(oid)) from pg_class where relkind = 'S';"
 }
 
+// VerifyDataIntegrity checks each foreign key has a parent row
+// Returns a slice of human-readable violations
+func (t *PgsqlTarget) VerifyDataIntegrity(ctx context.Context, tables []*schema.Table) ([]string, error) {
+	if t.conn == nil {
+		return nil, nil
+	}
+
+	var violations []string
+
+	for _, tbl := range tables {
+		for _, fk := range tbl.ForeignKeyes {
+			if len(fk.Columns) == 0 || len(fk.Columns) != len(fk.ReferencedColumns) {
+				continue
+			}
+
+			childTable := escapeIdentifier(translateIdentifier(fk.Table))
+			parentTable := escapeIdentifier(translateIdentifier(fk.ReferencedTable))
+
+			onConds := make([]string, len(fk.Columns))
+			notNulls := make([]string, len(fk.Columns))
+			for i := range fk.Columns {
+				c := escapeIdentifier(translateIdentifier(fk.Columns[i]))
+				r := escapeIdentifier(translateIdentifier(fk.ReferencedColumns[i]))
+				onConds[i] = fmt.Sprintf("t.%s = p.%s", c, r)
+				notNulls[i] = fmt.Sprintf("t.%s is not null", c)
+			}
+
+			on := strings.Join(onConds, " and ")
+			nn := strings.Join(notNulls, " and ")
+
+			sql := fmt.Sprintf(
+				"select count(*) from %s t where %s and not exists (select 1 from %s p where %s)",
+				childTable, nn, parentTable, on,
+			)
+
+			var missingCount int64
+			if err := t.conn.QueryRow(ctx, sql).Scan(&missingCount); err != nil {
+				return nil, fmt.Errorf("data integrity check failed - %s -> %s: %v", fk.Table, fk.ReferencedTable, err)
+			}
+			if missingCount > 0 {
+				violations = append(violations,
+					fmt.Sprintf(
+						"%s -> %s (%v -> %v): %d orphan row/s",
+						fk.Table,
+						fk.ReferencedTable,
+						fk.Columns,
+						fk.ReferencedColumns,
+						missingCount,
+					))
+			}
+		}
+	}
+
+	return violations, nil
+}
+
 func convertValueToString(val any, dt schema.DataType) string {
 	val = ConvertValue(val, dt)
 

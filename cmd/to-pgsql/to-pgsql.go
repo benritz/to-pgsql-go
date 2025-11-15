@@ -21,6 +21,7 @@ var (
 	incProcedures bool
 	incViews      bool
 	textType      string
+	verifyData    bool
 )
 
 func configOptions(c *config.Root) ([]migrate.Option, error) {
@@ -46,9 +47,12 @@ func configOptions(c *config.Root) ([]migrate.Option, error) {
 	opts = append(opts, migrate.WithIncludeTrigs(c.Include.Triggers))
 	opts = append(opts, migrate.WithIncludeProcs(c.Include.Procedures))
 	opts = append(opts, migrate.WithIncludeViews(c.Include.Views))
+
 	opts = append(opts, migrate.WithScripts(c.Scripts, c.ScriptsPath, c.ScriptsExpandEnv))
+
 	opts = append(opts, migrate.WithTextType(c.Target.TextType))
 	opts = append(opts, migrate.WithConstraintsAfterData(c.Target.ConstraintsAfterData))
+	opts = append(opts, migrate.WithVerifyData(c.Target.VerifyData))
 
 	return opts, nil
 }
@@ -60,6 +64,7 @@ func main() {
 	flag.StringVar(&textType, "textType", "citext", "How to convert the text column schema. Either text, citext or varchar (default).")
 	flag.StringVar(&incTables, "incTables", "none", "Include tables schema. Either none (default), create or recreate")
 	flag.StringVar(&incData, "incData", "none", "Include table data. Either none (default), insert, overwrite or merge.")
+	flag.BoolVar(&verifyData, "verifyData", false, "Verify data integrity")
 	flag.BoolVar(&incFunctions, "incFunctions", false, "Include functions")
 	flag.BoolVar(&incProcedures, "incProcedures", false, "Include procedures")
 	flag.BoolVar(&incTriggers, "incTriggers", false, "Include triggers")
@@ -124,6 +129,9 @@ func main() {
 	}
 	if _, ok := flagsSet["incViews"]; ok {
 		opts = append(opts, migrate.WithIncludeViews(incViews))
+	}
+	if _, ok := flagsSet["verifyData"]; ok {
+		opts = append(opts, migrate.WithVerifyData(verifyData))
 	}
 
 	ctx := context.Background()

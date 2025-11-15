@@ -27,6 +27,7 @@ CLI parameters override configuration file parameters.
 - `-incTriggers` - Include triggers (default: false)
 - `-incViews` - Include views (default: false)
 - `-dataBatchSize` - Batch size for data inserts 
+- `-verifyData` - Verify data integrity 
 
 ### Configuration File Parameters
 
@@ -41,6 +42,7 @@ target:
   text_type: "How to convert text columns (text, citext, varchar)"
   data_batch_size: "Batch size for data inserts"
   constraints_after_data: "Defer creating constraints & indexes until after data copy (true/false)"
+  verify_data: "Verify data integrity (true/false)"
 
 include:
   tables: "Include tables schema (none, create, recreate)"

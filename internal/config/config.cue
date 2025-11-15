@@ -12,6 +12,7 @@ import "strings"
 		text_type?:       *"text" | "text" | "citext" | "varchar" | ""
 		data_batch_size?: int & >=0
     constraints_after_data?: *false | true | false
+    verify_data?: bool
 	}
 
 	include?: {

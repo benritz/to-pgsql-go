@@ -48,6 +48,7 @@ type TargetSection struct {
 	TextType             string `yaml:"text_type"`
 	DataBatchSize        int    `yaml:"data_batch_size"`
 	ConstraintsAfterData bool   `yaml:"constraints_after_data"`
+	VerifyData           bool   `yaml:"verify_data"`
 }
 
 type IncludeSection struct {

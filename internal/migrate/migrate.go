@@ -29,6 +29,7 @@ type Migration struct {
 	scriptsBasePath      string
 	scriptsExpandEnv     bool
 	constraintsAfterData bool
+	verifyData           bool
 }
 
 type Option func(*Migration)
@@ -54,6 +55,12 @@ func New(opts ...Option) (*Migration, error) {
 	}
 
 	return &m, nil
+}
+
+func WithVerifyData(v bool) Option {
+	return func(m *Migration) {
+		m.verifyData = v
+	}
 }
 
 func WithSourceURL(v string) Option {
@@ -231,6 +238,20 @@ func (m Migration) Run(ctx context.Context) error {
 			if err := target.CreateConstraintsAndIndexes(ctx, tables, recreate); err != nil {
 				return fmt.Errorf("failed to create constraints and indexes: %w", err)
 			}
+		}
+
+		if m.verifyData {
+			violations, err := target.VerifyDataIntegrity(ctx, tables)
+			if err != nil {
+				return fmt.Errorf("data integrity check failed: %w", err)
+			}
+			if len(violations) > 0 {
+				fmt.Println("data integrity - failed")
+				for _, p := range violations {
+					fmt.Printf("verify data - %s\n", p)
+				}
+			}
+			fmt.Println("data integrity - passed")
 		}
 	}
 
