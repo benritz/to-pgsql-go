@@ -44,9 +44,10 @@ type SourceSection struct {
 }
 
 type TargetSection struct {
-	URL           string `yaml:"url"`
-	TextType      string `yaml:"text_type"`
-	DataBatchSize int    `yaml:"data_batch_size"`
+	URL                  string `yaml:"url"`
+	TextType             string `yaml:"text_type"`
+	DataBatchSize        int    `yaml:"data_batch_size"`
+	ConstraintsAfterData bool   `yaml:"constraints_after_data"`
 }
 
 type IncludeSection struct {

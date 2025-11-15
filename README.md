@@ -40,6 +40,7 @@ target:
   url: "Target database connection URL formatted as postgres://${TARGET_USER}:${TARGET_PWD}@${TARGET_HOST}/${TARGET_DB}"
   text_type: "How to convert text columns (text, citext, varchar)"
   data_batch_size: "Batch size for data inserts"
+  constraints_after_data: "Defer creating constraints & indexes until after data copy (true/false)"
 
 include:
   tables: "Include tables schema (none, create, recreate)"

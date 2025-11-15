@@ -14,20 +14,21 @@ import (
 )
 
 type Migration struct {
-	sourceURL        string
-	targetURL        string
-	includeData      config.DataAction
-	includeTables    config.TableAction
-	includeFuncs     bool
-	includeTrigs     bool
-	includeProcs     bool
-	includeViews     bool
-	textType         string
-	dataBatchSize    int
-	tableDefs        []config.TableDef
-	scripts          []string
-	scriptsBasePath  string
-	scriptsExpandEnv bool
+	sourceURL            string
+	targetURL            string
+	includeData          config.DataAction
+	includeTables        config.TableAction
+	includeFuncs         bool
+	includeTrigs         bool
+	includeProcs         bool
+	includeViews         bool
+	textType             string
+	dataBatchSize        int
+	tableDefs            []config.TableDef
+	scripts              []string
+	scriptsBasePath      string
+	scriptsExpandEnv     bool
+	constraintsAfterData bool
 }
 
 type Option func(*Migration)
@@ -151,6 +152,12 @@ func WithScripts(
 	}
 }
 
+func WithConstraintsAfterData(v bool) Option {
+	return func(m *Migration) {
+		m.constraintsAfterData = v
+	}
+}
+
 func (m Migration) Run(ctx context.Context) error {
 	source, err := mssql.NewMssqlSource(m.sourceURL)
 	if err != nil {
@@ -191,8 +198,10 @@ func (m Migration) Run(ctx context.Context) error {
 			if err := target.CreateTables(ctx, tables, recreate); err != nil {
 				return fmt.Errorf("failed to create table schema: %w", err)
 			}
-			if err := target.CreateConstraintsAndIndexes(ctx, tables, recreate); err != nil {
-				return fmt.Errorf("failed to create constraints and indexes: %w", err)
+			if !m.constraintsAfterData || m.includeData == config.DataNone {
+				if err := target.CreateConstraintsAndIndexes(ctx, tables, recreate); err != nil {
+					return fmt.Errorf("failed to create constraints and indexes: %w", err)
+				}
 			}
 		}
 
@@ -215,13 +224,14 @@ func (m Migration) Run(ctx context.Context) error {
 			}
 		}
 
-		// TODO - add option to defer index/key creation until after data load
-		// if m.includeTables != config.TableNone {
-		// 	recreate := m.includeTables == config.TableRecreate
-		// 	if err := target.CreateConstraintsAndIndexes(ctx, tables, recreate); err != nil {
-		// 		return fmt.Errorf("failed to create constraints and indexes: %w", err)
-		// 	}
-		// }
+		if m.constraintsAfterData &&
+			m.includeData != config.DataNone &&
+			m.includeTables != config.TableNone {
+			recreate := m.includeTables == config.TableRecreate
+			if err := target.CreateConstraintsAndIndexes(ctx, tables, recreate); err != nil {
+				return fmt.Errorf("failed to create constraints and indexes: %w", err)
+			}
+		}
 	}
 
 	if m.includeViews {

@@ -50,6 +50,7 @@ func configOptions(c *config.Root) ([]migrate.Option, error) {
 	opts = append(opts, migrate.WithScripts(c.Scripts, c.ScriptsPath, c.ScriptsExpandEnv))
 	opts = append(opts, migrate.WithTextType(c.Target.TextType))
 	opts = append(opts, migrate.WithDataBatchSize(c.Target.DataBatchSize))
+	opts = append(opts, migrate.WithConstraintsAfterData(c.Target.ConstraintsAfterData))
 
 	return opts, nil
 }
