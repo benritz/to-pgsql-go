@@ -238,6 +238,7 @@ func (t *PgsqlTarget) CopyTables(
 	tables []*schema.Table,
 	reader dialect.TableDataReader,
 	action dialect.CopyAction,
+	verifyData bool,
 ) error {
 	if t.out != nil {
 		fmt.Fprint(t.out, "/* -- Table data -- */\n\n")
@@ -327,7 +328,7 @@ func (t *PgsqlTarget) CopyTables(
 			if tableAction == dialect.CopyMerge && len(table.PKColNames) == 0 {
 				tableAction = dialect.CopyOverwrite
 			}
-			if txErr = t.copyTableData(ctx, table, reader, tableAction); txErr != nil {
+			if txErr = t.copyTableData(ctx, table, reader, tableAction, verifyData); txErr != nil {
 				return fmt.Errorf("copy data failed for %s: %v", table.Name, txErr)
 			}
 		}
@@ -559,6 +560,7 @@ func (t *PgsqlTarget) copyTableData(
 	table *schema.Table,
 	reader dialect.TableDataReader,
 	action dialect.CopyAction,
+	verifyData bool,
 ) error {
 	tablesMap, err := t.GetTables(ctx)
 	if err != nil {
@@ -581,15 +583,18 @@ func (t *PgsqlTarget) copyTableData(
 			return err
 		}
 
-		var copyRows [][]any
+		var rows [][]any
 		CopyBatchSize := 10000
+		var copyCount int64 = 0
 
-		copy := func() error {
-			if len(copyRows) > 0 {
-				count, err := t.conn.CopyFrom(ctx, pgx.Identifier{tableName}, colNames, pgx.CopyFromRows(copyRows))
+		copyRows := func() error {
+			if len(rows) > 0 {
+				count, err := t.conn.CopyFrom(ctx, pgx.Identifier{tableName}, colNames, pgx.CopyFromRows(rows))
 				if err != nil {
 					return err
 				}
+
+				copyCount += count
 
 				if target != &tempTable {
 					fmt.Printf("%s - copy data - copied %d rows\n", source.Name, count)
@@ -616,15 +621,15 @@ func (t *PgsqlTarget) copyTableData(
 				copyRow[i] = ConvertValue(data, cols[i].DataType)
 			}
 
-			copyRows = append(copyRows, copyRow)
+			rows = append(rows, copyRow)
 
-			if len(copyRows) >= CopyBatchSize {
-				if err := copy(); err != nil {
+			if len(rows) >= CopyBatchSize {
+				if err := copyRows(); err != nil {
 					reader.Close(ctx)
 					return err
 				}
 
-				copyRows = copyRows[:0]
+				rows = rows[:0]
 			}
 		}
 
@@ -632,13 +637,18 @@ func (t *PgsqlTarget) copyTableData(
 			return err
 		}
 
-		if err := copy(); err != nil {
+		if err := copyRows(); err != nil {
 			return err
 		}
 
-		var count int64
-		t.conn.QueryRow(ctx, fmt.Sprintf("select count(*) from %s", tableName)).Scan(&count)
-		fmt.Printf("%s - count %d", source.Name, count)
+		if verifyData {
+			var tableCount int64
+			t.conn.QueryRow(ctx, fmt.Sprintf("select count(*) from %s", tableName)).Scan(&tableCount)
+			if tableCount != copyCount {
+				return fmt.Errorf("%s - data integrity check failed: %d copied, %d in table", table.Name, copyCount, tableCount)
+			}
+			fmt.Printf("%s - data integrity - %d copied, %d in table\n", source.Name, copyCount, tableCount)
+		}
 
 		return nil
 	}

@@ -226,7 +226,7 @@ func (m Migration) Run(ctx context.Context) error {
 				return fmt.Errorf("invalid data action")
 			}
 
-			if err := target.CopyTables(ctx, tables, reader, copyAction); err != nil {
+			if err := target.CopyTables(ctx, tables, reader, copyAction, m.verifyData); err != nil {
 				return fmt.Errorf("failed to copy table data: %w", err)
 			}
 		}
