@@ -672,7 +672,7 @@ func (t *PgsqlTarget) copyTableData(
 		return nil
 	}
 
-	if empty {
+	if empty && action != dialect.CopyOverwrite {
 		fmt.Printf("%s - copy data - target table empty, copying data\n", table.Name)
 		if err := copyData(table, targetTable); err != nil {
 			return err
