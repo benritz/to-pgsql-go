@@ -392,7 +392,7 @@ func (t *PgsqlTarget) writeTableData(
 				fmt.Fprintf(t.out, "-- %s\n", table.Name)
 
 				if action != dialect.CopyInsert {
-					fmt.Fprintf(t.out, "truncate table %s cascade;\n", targetTableName)
+					fmt.Fprintf(t.out, "truncate table %s;\n", targetTableName)
 				}
 
 				written = true
@@ -501,7 +501,7 @@ func (t *PgsqlTarget) copyTableData(
 		}
 
 		if truncate {
-			sql := fmt.Sprintf("truncate table %s cascade;", escapeIdentifier(tableName))
+			sql := fmt.Sprintf("truncate table %s;", escapeIdentifier(tableName))
 			if _, err := t.conn.Exec(ctx, sql); err != nil {
 				return err
 			}
@@ -526,6 +526,7 @@ func (t *PgsqlTarget) copyTableData(
 				if target != &tempTable {
 					fmt.Printf("%s - copy data - copied %d rows\n", source.Name, count)
 				}
+
 				t.conn.QueryRow(ctx, fmt.Sprintf("select count(*) from %s", tableName)).Scan(&count)
 				fmt.Printf("%s - count %d", source.Name, count)
 			}
