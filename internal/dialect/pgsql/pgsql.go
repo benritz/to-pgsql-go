@@ -438,7 +438,7 @@ func (t *PgsqlTarget) truncateTableData(
 ) error {
 
 	targetTableName := escapeIdentifier(translateIdentifier(table.Name))
-	sql := fmt.Sprintf("truncate table %s;", targetTableName)
+	sql := fmt.Sprintf("truncate table %s cascade;", targetTableName)
 
 	if t.out != nil {
 		fmt.Fprint(t.out, sql)
