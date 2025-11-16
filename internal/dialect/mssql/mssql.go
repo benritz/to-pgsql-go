@@ -59,6 +59,7 @@ func (s *MssqlSource) GetTables(ctx context.Context) (map[string]*schema.Table, 
 	for _, index := range indexes {
 		if table, ok := s.tableCache[strings.ToLower(index.Table)]; ok {
 			table.Indexes = append(table.Indexes, index)
+			table.PKColNames = schema.PrimaryKeyColumns(table)
 		}
 	}
 

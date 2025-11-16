@@ -56,6 +56,7 @@ type Table struct {
 	Columns      []*Column
 	Indexes      []*Index
 	ForeignKeyes []*ForeignKey
+	PKColNames   []string
 }
 
 func (t *Table) GetColumn(name string) *Column {

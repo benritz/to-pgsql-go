@@ -97,8 +97,9 @@ func (t *PgsqlTarget) GetTables(ctx context.Context) (map[string]*schema.Table, 
 		return nil, err
 	}
 	for _, idx := range indexes {
-		if tbl, ok := t.tableCache[translateIdentifier(idx.Table)]; ok {
-			tbl.Indexes = append(tbl.Indexes, idx)
+		if table, ok := t.tableCache[translateIdentifier(idx.Table)]; ok {
+			table.Indexes = append(table.Indexes, idx)
+			table.PKColNames = schema.PrimaryKeyColumns(table)
 		}
 	}
 
@@ -107,8 +108,8 @@ func (t *PgsqlTarget) GetTables(ctx context.Context) (map[string]*schema.Table, 
 		return nil, err
 	}
 	for _, fk := range keys {
-		if tbl, ok := t.tableCache[translateIdentifier(fk.Table)]; ok {
-			tbl.ForeignKeyes = append(tbl.ForeignKeyes, fk)
+		if table, ok := t.tableCache[translateIdentifier(fk.Table)]; ok {
+			table.ForeignKeyes = append(table.ForeignKeyes, fk)
 		}
 	}
 
@@ -254,7 +255,7 @@ func (t *PgsqlTarget) CopyTables(
 		}
 
 		for _, table := range tables {
-			if err := t.writeTableData(ctx, table, reader, action); err != nil {
+			if err := t.writeTableData(ctx, table, reader); err != nil {
 				return err
 			}
 		}
@@ -264,6 +265,8 @@ func (t *PgsqlTarget) CopyTables(
 		}
 
 		t.writeSeqReset()
+
+		return nil
 	}
 
 	if t.conn != nil {
@@ -280,11 +283,8 @@ func (t *PgsqlTarget) CopyTables(
 				return nil, err
 			}
 
-			fmt.Println("trans begin")
-
 			if err := setReplicationOn(ctx, t.conn); err != nil {
 				tx.Rollback(ctx)
-				fmt.Println("repl on failed, trans rollback")
 				return nil, err
 			}
 
@@ -293,10 +293,8 @@ func (t *PgsqlTarget) CopyTables(
 
 				if txErr == nil {
 					tx.Commit(ctx)
-					fmt.Println("trans commit")
 				} else {
 					tx.Rollback(ctx)
-					fmt.Println("trans rollback")
 				}
 			}
 
@@ -313,23 +311,29 @@ func (t *PgsqlTarget) CopyTables(
 			}
 			defer (*completeFn)()
 
-			if action == dialect.CopyOverwrite {
+			if action != dialect.CopyInsert {
 				for _, table := range tables {
-					if txErr = t.truncateTableData(ctx, table); txErr != nil {
-						return txErr
+					if action == dialect.CopyOverwrite || len(table.PKColNames) == 0 {
+						if txErr = t.truncateTableData(ctx, table); txErr != nil {
+							return fmt.Errorf("truncate data failed for %s: %v", table.Name, txErr)
+						}
 					}
 				}
 			}
 		}
 
 		for _, table := range tables {
-			if txErr = t.copyTableData(ctx, table, reader, action); txErr != nil {
+			tableAction := action
+			if tableAction == dialect.CopyMerge && len(table.PKColNames) == 0 {
+				tableAction = dialect.CopyOverwrite
+			}
+			if txErr = t.copyTableData(ctx, table, reader, tableAction); txErr != nil {
 				return fmt.Errorf("copy data failed for %s: %v", table.Name, txErr)
 			}
 		}
 
 		if txErr = t.execSeqReset(ctx); txErr != nil {
-			return txErr
+			return fmt.Errorf("reset sequence values failed: %v", txErr)
 		}
 	}
 
@@ -441,16 +445,16 @@ func (t *PgsqlTarget) truncateTableData(
 	sql := fmt.Sprintf("truncate table %s cascade;", targetTableName)
 
 	if t.out != nil {
-		fmt.Fprint(t.out, sql)
+		fmt.Fprint(t.out, sql+"\n")
 		return nil
 	}
 
-	tag, err := t.conn.Exec(ctx, sql)
+	_, err := t.conn.Exec(ctx, sql)
 	if err != nil {
 		return err
 	}
 
-	fmt.Printf("%s - copy data - truncated %d row/s\n", table.Name, tag.RowsAffected())
+	fmt.Printf("%s - copy data - truncated\n", table.Name)
 
 	return nil
 }
@@ -459,7 +463,6 @@ func (t *PgsqlTarget) writeTableData(
 	ctx context.Context,
 	table *schema.Table,
 	reader dialect.TableDataReader,
-	action dialect.CopyAction,
 ) error {
 	if err := reader.Open(ctx, table.Name, table.Columns); err != nil {
 		return err
@@ -583,8 +586,6 @@ func (t *PgsqlTarget) copyTableData(
 
 		copy := func() error {
 			if len(copyRows) > 0 {
-				fmt.Printf("%s - copy columns %v\n", source.Name, colNames)
-
 				count, err := t.conn.CopyFrom(ctx, pgx.Identifier{tableName}, colNames, pgx.CopyFromRows(copyRows))
 				if err != nil {
 					return err
@@ -593,9 +594,6 @@ func (t *PgsqlTarget) copyTableData(
 				if target != &tempTable {
 					fmt.Printf("%s - copy data - copied %d rows\n", source.Name, count)
 				}
-
-				t.conn.QueryRow(ctx, fmt.Sprintf("select count(*) from %s", tableName)).Scan(&count)
-				fmt.Printf("%s - count %d", source.Name, count)
 			}
 
 			return nil
@@ -638,6 +636,10 @@ func (t *PgsqlTarget) copyTableData(
 			return err
 		}
 
+		var count int64
+		t.conn.QueryRow(ctx, fmt.Sprintf("select count(*) from %s", tableName)).Scan(&count)
+		fmt.Printf("%s - count %d", source.Name, count)
+
 		return nil
 	}
 
@@ -650,8 +652,6 @@ func (t *PgsqlTarget) copyTableData(
 		return nil
 	}
 
-	pkColNames := schema.PrimaryKeyColumns(table)
-
 	empty, err := isTableEmpty(ctx, t.conn, targetTableName)
 	if err != nil {
 		return err
@@ -662,7 +662,6 @@ func (t *PgsqlTarget) copyTableData(
 		return nil
 	}
 
-	// emtpy table, just copy the data
 	if empty {
 		fmt.Printf("%s - copy data - target table empty, copying data\n", table.Name)
 		if err := copyData(table, targetTable); err != nil {
@@ -672,15 +671,12 @@ func (t *PgsqlTarget) copyTableData(
 		return nil
 	}
 
-	// overwrite, truncate data, copy data
-	// merge requires primary key, use overwrite if no primary key
-	if action == dialect.CopyOverwrite || len(pkColNames) == 0 {
+	// emtpy table, copy the data
+	// overwrite, copy the data
+	// merge requires primary key, copy the data if no primary key
+	if empty || action == dialect.CopyOverwrite || len(table.PKColNames) == 0 {
 		fmt.Printf("%s - copy data - overwriting data\n", table.Name)
-		if err := copyData(table, targetTable); err != nil {
-			return err
-		}
-
-		return nil
+		return copyData(table, targetTable)
 	}
 
 	// merge, use replication, merge new+existing rows, delete rows not in source
@@ -728,8 +724,8 @@ func (t *PgsqlTarget) copyTableData(
 		return err
 	}
 
-	matchColNames := make([]string, len(pkColNames))
-	for n, col := range pkColNames {
+	matchColNames := make([]string, len(table.PKColNames))
+	for n, col := range table.PKColNames {
 		translatedName := translateIdentifier(col)
 		matchColNames[n] = fmt.Sprintf("t.%s = s.%s", translatedName, translatedName)
 	}
@@ -738,11 +734,11 @@ func (t *PgsqlTarget) copyTableData(
 	updateableCols := schema.UpdateableColumns(table)
 
 	var updateClause string
-	updateColNames := make([]string, len(updateableCols)-len(pkColNames))
+	updateColNames := make([]string, len(updateableCols)-len(table.PKColNames))
 	if len(updateColNames) > 0 {
 		n := 0
 		for _, col := range updateableCols {
-			if !slices.Contains(pkColNames, col.Name) {
+			if !slices.Contains(table.PKColNames, col.Name) {
 				translatedName := translateIdentifier(col.Name)
 				updateColNames[n] = fmt.Sprintf("%s = s.%s", translatedName, translatedName)
 				n++
