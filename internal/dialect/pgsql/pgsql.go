@@ -243,6 +243,14 @@ func (t *PgsqlTarget) CopyTables(
 
 		if action != dialect.CopyInsert {
 			fmt.Fprint(t.out, "set session_replication_role = 'replica';\n\n")
+
+			if action == dialect.CopyOverwrite {
+				for _, table := range tables {
+					if err := t.truncateTableData(ctx, table); err != nil {
+						return err
+					}
+				}
+			}
 		}
 
 		for _, table := range tables {
@@ -259,14 +267,69 @@ func (t *PgsqlTarget) CopyTables(
 	}
 
 	if t.conn != nil {
-		for _, table := range tables {
-			if err := t.copyTableData(ctx, table, reader, action); err != nil {
-				return fmt.Errorf("copy data failed for %s: %v", table.Name, err)
+		// txErr is used by useReplication() defer func to commit or rollback the transaction
+		var txErr error
+
+		// use replication to prevent triggers/foreign key issues
+		// when connection pooling is used a transaction must be used to ensure the same connection
+		// is used (the pool mode should be transaction)
+		// returns a function to commit/rollback the tranaction based on the txErr value and reset the replication setting
+		useReplication := func(ctx context.Context) (*func(), error) {
+			tx, err := t.conn.Begin(ctx)
+			if err != nil {
+				return nil, err
+			}
+
+			fmt.Println("trans begin")
+
+			if err := setReplicationOn(ctx, t.conn); err != nil {
+				tx.Rollback(ctx)
+				fmt.Println("repl on failed, trans rollback")
+				return nil, err
+			}
+
+			completeFn := func() {
+				setReplicationOff(ctx, t.conn)
+
+				if txErr == nil {
+					tx.Commit(ctx)
+					fmt.Println("trans commit")
+				} else {
+					tx.Rollback(ctx)
+					fmt.Println("trans rollback")
+				}
+			}
+
+			return &completeFn, nil
+		}
+
+		if action != dialect.CopyInsert {
+			// use replication to prevent triggers/foreign key issues
+			// data can be populated before target tables are populated
+			// data can be truncated and re-inserted
+			completeFn, err := useReplication(ctx)
+			if err != nil {
+				return err
+			}
+			defer (*completeFn)()
+
+			if action == dialect.CopyOverwrite {
+				for _, table := range tables {
+					if txErr = t.truncateTableData(ctx, table); txErr != nil {
+						return txErr
+					}
+				}
 			}
 		}
 
-		if err := t.execSeqReset(ctx); err != nil {
-			return err
+		for _, table := range tables {
+			if txErr = t.copyTableData(ctx, table, reader, action); txErr != nil {
+				return fmt.Errorf("copy data failed for %s: %v", table.Name, txErr)
+			}
+		}
+
+		if txErr = t.execSeqReset(ctx); txErr != nil {
+			return txErr
 		}
 	}
 
@@ -369,6 +432,29 @@ func (t *PgsqlTarget) CreateFunctions(ctx context.Context, functions []*schema.F
 	return nil
 }
 
+func (t *PgsqlTarget) truncateTableData(
+	ctx context.Context,
+	table *schema.Table,
+) error {
+
+	targetTableName := escapeIdentifier(translateIdentifier(table.Name))
+	sql := fmt.Sprintf("truncate table %s;", targetTableName)
+
+	if t.out != nil {
+		fmt.Fprint(t.out, sql)
+		return nil
+	}
+
+	tag, err := t.conn.Exec(ctx, sql)
+	if err != nil {
+		return err
+	}
+
+	fmt.Printf("%s - copy data - truncated %d row/s\n", table.Name, tag.RowsAffected())
+
+	return nil
+}
+
 func (t *PgsqlTarget) writeTableData(
 	ctx context.Context,
 	table *schema.Table,
@@ -390,11 +476,6 @@ func (t *PgsqlTarget) writeTableData(
 		if len(rows) > 0 {
 			if !written {
 				fmt.Fprintf(t.out, "-- %s\n", table.Name)
-
-				if action != dialect.CopyInsert {
-					fmt.Fprintf(t.out, "truncate table %s;\n", targetTableName)
-				}
-
 				written = true
 			}
 
@@ -476,9 +557,6 @@ func (t *PgsqlTarget) copyTableData(
 	reader dialect.TableDataReader,
 	action dialect.CopyAction,
 ) error {
-	// txErr is used by useReplication() defer func to commit or rollback the transaction
-	var txErr error
-
 	tablesMap, err := t.GetTables(ctx)
 	if err != nil {
 		return err
@@ -486,7 +564,7 @@ func (t *PgsqlTarget) copyTableData(
 
 	var tempTable schema.Table
 
-	copyData := func(source, target *schema.Table, truncate bool) error {
+	copyData := func(source, target *schema.Table) error {
 		tableName := translateIdentifier(target.Name)
 
 		cols := schema.UpdateableColumns(target)
@@ -498,17 +576,6 @@ func (t *PgsqlTarget) copyTableData(
 
 		if err := reader.Open(ctx, source.Name, cols); err != nil {
 			return err
-		}
-
-		if truncate {
-			sql := fmt.Sprintf("truncate table %s;", escapeIdentifier(tableName))
-			if _, err := t.conn.Exec(ctx, sql); err != nil {
-				return err
-			}
-
-			if target != &tempTable {
-				fmt.Printf("%s - copy data - truncated\n", source.Name)
-			}
 		}
 
 		var copyRows [][]any
@@ -583,39 +650,6 @@ func (t *PgsqlTarget) copyTableData(
 		return nil
 	}
 
-	// use replication to prevent triggers/foreign key issues
-	// when connection pooling is used a transaction must be used to ensure the same connection
-	// is used (the pool mode should be transaction)
-	// returns a function to commit/rollbackl the tranaction based on the txErr value and reset the replication setting
-	useReplication := func(ctx context.Context) (*func(), error) {
-		tx, err := t.conn.Begin(ctx)
-		if err != nil {
-			return nil, err
-		}
-
-		fmt.Println("trans begin")
-
-		if err := setReplicationOn(ctx, t.conn); err != nil {
-			tx.Rollback(ctx)
-			fmt.Println("repl on failed, trans rollback")
-			return nil, err
-		}
-
-		completeFn := func() {
-			setReplicationOff(ctx, t.conn)
-
-			if txErr == nil {
-				tx.Commit(ctx)
-				fmt.Println("trans commit")
-			} else {
-				tx.Rollback(ctx)
-				fmt.Println("trans rollback")
-			}
-		}
-
-		return &completeFn, nil
-	}
-
 	pkColNames := schema.PrimaryKeyColumns(table)
 
 	empty, err := isTableEmpty(ctx, t.conn, targetTableName)
@@ -628,20 +662,11 @@ func (t *PgsqlTarget) copyTableData(
 		return nil
 	}
 
-	// use replication to prevent triggers/foreign key issues
-	// data can be populated before target tables are populated
-	// data can be truncated and re-inserted
-	completeFn, err := useReplication(ctx)
-	if err != nil {
-		return err
-	}
-	defer (*completeFn)()
-
 	// emtpy table, just copy the data
 	if empty {
 		fmt.Printf("%s - copy data - target table empty, copying data\n", table.Name)
-		if txErr = copyData(table, targetTable, false); txErr != nil {
-			return txErr
+		if err := copyData(table, targetTable); err != nil {
+			return err
 		}
 
 		return nil
@@ -651,8 +676,8 @@ func (t *PgsqlTarget) copyTableData(
 	// merge requires primary key, use overwrite if no primary key
 	if action == dialect.CopyOverwrite || len(pkColNames) == 0 {
 		fmt.Printf("%s - copy data - overwriting data\n", table.Name)
-		if txErr = copyData(table, targetTable, true); txErr != nil {
-			return txErr
+		if err := copyData(table, targetTable); err != nil {
+			return err
 		}
 
 		return nil
@@ -699,7 +724,7 @@ func (t *PgsqlTarget) copyTableData(
 
 	defer dropTempTable()
 
-	if err := copyData(table, &tempTable, false); err != nil {
+	if err := copyData(table, &tempTable); err != nil {
 		return err
 	}
 
@@ -744,9 +769,9 @@ func (t *PgsqlTarget) copyTableData(
 
 	var tag pgconn.CommandTag
 
-	tag, txErr = t.conn.Exec(ctx, sql)
-	if txErr != nil {
-		return fmt.Errorf("failed to merge table (insert/update) %s: %v", targetTableName, txErr)
+	tag, err = t.conn.Exec(ctx, sql)
+	if err != nil {
+		return fmt.Errorf("failed to merge table (insert/update) %s: %v", targetTableName, err)
 	}
 
 	fmt.Printf("%s - copy data - merged %d rows\n", table.Name, tag.RowsAffected())
@@ -754,9 +779,9 @@ func (t *PgsqlTarget) copyTableData(
 	// delete when not matched by source
 	sql = fmt.Sprintf("delete from %s as t where not exists (select 1 from %s as s where %s);", targetTableName, tempTable.Name, matchClause)
 
-	tag, txErr = t.conn.Exec(ctx, sql)
-	if txErr != nil {
-		return fmt.Errorf("failed to merge table (delete) %s: %v", targetTableName, txErr)
+	tag, err = t.conn.Exec(ctx, sql)
+	if err != nil {
+		return fmt.Errorf("failed to merge table (delete) %s: %v", targetTableName, err)
 	}
 
 	fmt.Printf("%s - copy data - deleted %d rows\n", table.Name, tag.RowsAffected())
