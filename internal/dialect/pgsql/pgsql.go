@@ -302,22 +302,20 @@ func (t *PgsqlTarget) CopyTables(
 			return &completeFn, nil
 		}
 
-		if action != dialect.CopyInsert {
-			// use replication to prevent triggers/foreign key issues
-			// data can be populated before target tables are populated
-			// data can be truncated and re-inserted
-			completeFn, err := useReplication(ctx)
-			if err != nil {
-				return err
-			}
-			defer (*completeFn)()
+		// use replication to prevent triggers/foreign key issues
+		// data can be populated before target tables are populated
+		// data can be truncated and re-inserted
+		completeFn, err := useReplication(ctx)
+		if err != nil {
+			return err
+		}
+		defer (*completeFn)()
 
-			if action != dialect.CopyInsert {
-				for _, table := range tables {
-					if action == dialect.CopyOverwrite || len(table.PKColNames) == 0 {
-						if txErr = t.truncateTableData(ctx, table); txErr != nil {
-							return fmt.Errorf("truncate data failed for %s: %v", table.Name, txErr)
-						}
+		if action != dialect.CopyInsert {
+			for _, table := range tables {
+				if action == dialect.CopyOverwrite || len(table.PKColNames) == 0 {
+					if txErr = t.truncateTableData(ctx, table); txErr != nil {
+						return fmt.Errorf("truncate data failed for %s: %v", table.Name, txErr)
 					}
 				}
 			}
@@ -689,7 +687,7 @@ func (t *PgsqlTarget) copyTableData(
 		return copyData(table, targetTable)
 	}
 
-	// merge, use replication, merge new+existing rows, delete rows not in source
+	// merge new+existing rows, delete rows not in source
 	getTempTableName := func() (string, error) {
 		retries := 10
 		for retries > 0 {
