@@ -30,6 +30,8 @@ CLI parameters override configuration file parameters.
 - `-dataBatchSize` - Batch size for data inserts 
 - `-verifyData` - Verify data integrity 
 
+For PostgreSQL database targets, `to-pgsql` uses the session's `current_schema()` from the target connection URL and restricts its own target-side table, index, foreign key, data copy, and sequence reset operations to that schema only.
+
 ### Configuration File Parameters
 
 The configuration file supports the following structure:
@@ -84,4 +86,3 @@ scripts: ["Script file paths"]
 scripts_path: "Base path for script files"
 scripts_expand_env: "Expand environment variables in scripts (true/false)"
 ```
-

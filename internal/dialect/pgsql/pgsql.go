@@ -21,6 +21,7 @@ import (
 type PgsqlTarget struct {
 	conn       *pgx.Conn
 	out        *os.File
+	schema     string
 	textType   string // "", "text" or "citext"
 	tableCache map[string]*schema.Table
 }
@@ -45,7 +46,20 @@ func NewPgsqlTarget(ctx context.Context, targetUrl, textType string) (*PgsqlTarg
 			return nil, err
 		}
 
+		var currentSchema string
+		if err := conn.QueryRow(ctx, "select current_schema()").Scan(&currentSchema); err != nil {
+			conn.Close(ctx)
+			return nil, fmt.Errorf("failed to resolve current schema: %w", err)
+		}
+
+		searchPathSQL := fmt.Sprintf("set search_path to %s, public", escapeIdentifier(currentSchema))
+		if _, err := conn.Exec(ctx, searchPathSQL); err != nil {
+			conn.Close(ctx)
+			return nil, fmt.Errorf("failed to restrict search_path to current schema: %w", err)
+		}
+
 		target.conn = conn
+		target.schema = currentSchema
 	} else {
 		// file target
 		var out *os.File
@@ -396,6 +410,29 @@ func (t *PgsqlTarget) createScript(ctx context.Context, name string, contents st
 	return nil
 }
 
+func (t *PgsqlTarget) qualifiedName(name string) string {
+	return fmt.Sprintf("%s.%s", escapeIdentifier(t.schema), escapeIdentifier(translateIdentifier(name)))
+}
+
+func (t *PgsqlTarget) qualifiedTable(table *schema.Table) *schema.Table {
+	qualified := *table
+	qualified.Name = t.qualifiedName(table.Name)
+	return &qualified
+}
+
+func (t *PgsqlTarget) qualifiedIndex(index *schema.Index) *schema.Index {
+	qualified := *index
+	qualified.Table = t.qualifiedName(index.Table)
+	return &qualified
+}
+
+func (t *PgsqlTarget) qualifiedForeignKey(key *schema.ForeignKey) *schema.ForeignKey {
+	qualified := *key
+	qualified.Table = t.qualifiedName(key.Table)
+	qualified.ReferencedTable = t.qualifiedName(key.ReferencedTable)
+	return &qualified
+}
+
 func (t *PgsqlTarget) CreateTriggers(ctx context.Context, triggers []*schema.Trigger) error {
 	if t.out != nil {
 		if err := t.writeTriggers(triggers); err != nil {
@@ -440,7 +477,7 @@ func (t *PgsqlTarget) truncateTableData(
 	table *schema.Table,
 ) error {
 
-	targetTableName := escapeIdentifier(translateIdentifier(table.Name))
+	targetTableName := t.qualifiedName(table.Name)
 	sql := fmt.Sprintf("truncate table %s cascade;", targetTableName)
 
 	if t.out != nil {
@@ -548,8 +585,8 @@ func (t *PgsqlTarget) writeSeqReset() {
 	fmt.Fprintf(
 		t.out,
 		"/* --------------------- SEQUENCE RESET --------------------- */\n\n%s\n\n-- set any sequence to the maximum value of the sequence's field\n%s\n\n",
-		CreateSeqResetFnStatement(),
-		ExecSeqResetFnStatement(),
+		CreateSeqResetFnStatement("public"),
+		ExecSeqResetFnStatement("public"),
 	)
 }
 
@@ -569,6 +606,7 @@ func (t *PgsqlTarget) copyTableData(
 
 	copyData := func(source, target *schema.Table) error {
 		tableName := translateIdentifier(target.Name)
+		qualifiedTableName := t.qualifiedName(target.Name)
 
 		cols := schema.UpdateableColumns(target)
 
@@ -587,7 +625,7 @@ func (t *PgsqlTarget) copyTableData(
 
 		copyRows := func() error {
 			if len(rows) > 0 {
-				count, err := t.conn.CopyFrom(ctx, pgx.Identifier{tableName}, colNames, pgx.CopyFromRows(rows))
+				count, err := t.conn.CopyFrom(ctx, pgx.Identifier{t.schema, tableName}, colNames, pgx.CopyFromRows(rows))
 				if err != nil {
 					return err
 				}
@@ -641,7 +679,7 @@ func (t *PgsqlTarget) copyTableData(
 
 		if verifyData {
 			var tableCount int64
-			t.conn.QueryRow(ctx, fmt.Sprintf("select count(*) from %s", tableName)).Scan(&tableCount)
+			t.conn.QueryRow(ctx, fmt.Sprintf("select count(*) from %s", qualifiedTableName)).Scan(&tableCount)
 			if tableCount != copyCount {
 				return fmt.Errorf("%s - data integrity check failed: %d copied, %d in table", table.Name, copyCount, tableCount)
 			}
@@ -652,6 +690,7 @@ func (t *PgsqlTarget) copyTableData(
 	}
 
 	targetTableName := translateIdentifier(table.Name)
+	qualifiedTargetTableName := t.qualifiedName(table.Name)
 
 	targetTable, ok := tablesMap[targetTableName]
 	if !ok {
@@ -660,7 +699,7 @@ func (t *PgsqlTarget) copyTableData(
 		return nil
 	}
 
-	empty, err := isTableEmpty(ctx, t.conn, targetTableName)
+	empty, err := isTableEmpty(ctx, t.conn, qualifiedTargetTableName)
 	if err != nil {
 		return err
 	}
@@ -711,14 +750,14 @@ func (t *PgsqlTarget) copyTableData(
 	tempTable = *table
 	tempTable.Name = tempTableName
 
-	sql := CreateTableStatement(&tempTable, t.textType, false)
+	sql := CreateTableStatement(t.qualifiedTable(&tempTable), t.textType, false)
 	_, err = t.conn.Exec(ctx, sql)
 	if err != nil {
 		return fmt.Errorf("failed to create temp table: %v", err)
 	}
 
 	dropTempTable := func() error {
-		sql := DropTableStatement(&tempTable)
+		sql := DropTableStatement(t.qualifiedTable(&tempTable))
 		_, err := t.conn.Exec(ctx, sql)
 		if err != nil {
 			return fmt.Errorf("failed to drop temp table: %v", err)
@@ -769,23 +808,23 @@ func (t *PgsqlTarget) copyTableData(
 	}
 	insertValuesClause := strings.Join(insertValuesColNames, ", ")
 
-	sql = fmt.Sprintf("merge into %s as t using %s AS s on %s %s when not matched then insert (%s) values (%s)", targetTableName, tempTable.Name, matchClause, updateClause, insertClause, insertValuesClause)
+	sql = fmt.Sprintf("merge into %s as t using %s as s on %s %s when not matched then insert (%s) values (%s)", qualifiedTargetTableName, t.qualifiedName(tempTable.Name), matchClause, updateClause, insertClause, insertValuesClause)
 
 	var tag pgconn.CommandTag
 
 	tag, err = t.conn.Exec(ctx, sql)
 	if err != nil {
-		return fmt.Errorf("failed to merge table (insert/update) %s: %v", targetTableName, err)
+		return fmt.Errorf("failed to merge table (insert/update) %s: %v", qualifiedTargetTableName, err)
 	}
 
 	fmt.Printf("%s - copy data - merged %d rows\n", table.Name, tag.RowsAffected())
 
 	// delete when not matched by source
-	sql = fmt.Sprintf("delete from %s as t where not exists (select 1 from %s as s where %s);", targetTableName, tempTable.Name, matchClause)
+	sql = fmt.Sprintf("delete from %s as t where not exists (select 1 from %s as s where %s);", qualifiedTargetTableName, t.qualifiedName(tempTable.Name), matchClause)
 
 	tag, err = t.conn.Exec(ctx, sql)
 	if err != nil {
-		return fmt.Errorf("failed to merge table (delete) %s: %v", targetTableName, err)
+		return fmt.Errorf("failed to merge table (delete) %s: %v", qualifiedTargetTableName, err)
 	}
 
 	fmt.Printf("%s - copy data - deleted %d rows\n", table.Name, tag.RowsAffected())
@@ -796,17 +835,17 @@ func (t *PgsqlTarget) copyTableData(
 func (t *PgsqlTarget) execSeqReset(ctx context.Context) error {
 	var missing bool
 	sql := "select not exists (select 1 from pg_proc where proname = $1 and pronamespace = $2::regnamespace)"
-	if err := t.conn.QueryRow(ctx, sql, "seq_field_max_value", "public").Scan(&missing); err != nil {
+	if err := t.conn.QueryRow(ctx, sql, "seq_field_max_value", t.schema).Scan(&missing); err != nil {
 		return fmt.Errorf("failed to check seq_field_max_value function: %v", err)
 	}
 
 	if missing {
-		if _, err := t.conn.Exec(ctx, CreateSeqResetFnStatement()); err != nil {
+		if _, err := t.conn.Exec(ctx, CreateSeqResetFnStatement(t.schema)); err != nil {
 			return fmt.Errorf("failed to create seq_field_max_value function: %v", err)
 		}
 	}
 
-	if _, err := t.conn.Exec(ctx, ExecSeqResetFnStatement()); err != nil {
+	if _, err := t.conn.Exec(ctx, ExecSeqResetFnStatement(t.schema)); err != nil {
 		return fmt.Errorf("failed reset sequence values: %v", err)
 	}
 
@@ -883,13 +922,13 @@ func (t *PgsqlTarget) createTableSchema(
 	recreate bool,
 ) error {
 	if recreate {
-		sql := DropTableStatement(table)
+		sql := DropTableStatement(t.qualifiedTable(table))
 		if _, err := t.conn.Exec(ctx, sql); err != nil {
 			return fmt.Errorf("failed to drop table %s: %v", table.Name, err)
 		}
 	}
 
-	sql := CreateTableStatement(table, t.textType, recreate)
+	sql := CreateTableStatement(t.qualifiedTable(table), t.textType, recreate)
 	if _, err := t.conn.Exec(ctx, sql); err != nil {
 		return fmt.Errorf("failed to create table %s: %v", table.Name, err)
 	}
@@ -929,7 +968,7 @@ func (t *PgsqlTarget) createIndexes(ctx context.Context, indexes []*schema.Index
 }
 
 func (t *PgsqlTarget) createIndex(ctx context.Context, index *schema.Index) error {
-	sql := CreateIndexStatement(index)
+	sql := CreateIndexStatement(t.qualifiedIndex(index))
 	_, err := t.conn.Exec(ctx, sql)
 	if err != nil {
 		return fmt.Errorf("failed to create index %v - %s: %v", index, sql, err)
@@ -968,7 +1007,7 @@ func (t *PgsqlTarget) createForeignKeys(ctx context.Context, keys []*schema.Fore
 }
 
 func (t *PgsqlTarget) createForeignKey(ctx context.Context, key *schema.ForeignKey) error {
-	sql := CreateForeignKeyStatement(key)
+	sql := CreateForeignKeyStatement(t.qualifiedForeignKey(key))
 	_, err := t.conn.Exec(ctx, sql)
 	if err != nil {
 		return fmt.Errorf("failed to create foreign key %v - %s: %v", key, sql, err)
@@ -1101,6 +1140,10 @@ func escapeIdentifier(name string) string {
 	return fmt.Sprintf(`"%s"`, strings.ReplaceAll(name, `"`, `""`))
 }
 
+func pgStringLiteral(s string) string {
+	return fmt.Sprintf("'%s'", strings.ReplaceAll(s, "'", "''"))
+}
+
 func isConnectionUrl(url string) bool {
 	return !strings.HasPrefix(url, "file://") && strings.Contains(url, "://")
 }
@@ -1128,12 +1171,12 @@ SELECT
     (a.attgenerated <> '') AS is_generated,
     pg_get_expr(ad.adbin, ad.adrelid) AS default_expr
 FROM pg_catalog.pg_class c
-JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
+JOIN pg_catalog.pg_namespace ns ON ns.oid = c.relnamespace
 JOIN pg_catalog.pg_attribute a ON a.attrelid = c.oid
 JOIN pg_catalog.pg_type t ON t.oid = a.atttypid
 LEFT JOIN pg_catalog.pg_attrdef ad ON ad.adrelid = c.oid AND ad.adnum = a.attnum
 WHERE c.relkind = 'r'
-  AND n.nspname NOT IN ('pg_catalog', 'information_schema')
+  AND ns.nspname = current_schema() 
   AND a.attnum > 0
   AND NOT a.attisdropped
 ORDER BY c.relname ASC, c.oid ASC, a.attnum ASC`)
@@ -1246,7 +1289,7 @@ func readIndexes(ctx context.Context, conn *pgx.Conn) ([]*schema.Index, error) {
     LEFT JOIN LATERAL unnest(ix.indkey) WITH ORDINALITY AS ord(attnum, n) ON TRUE
     LEFT JOIN pg_attribute att ON att.attrelid = tbl.oid AND att.attnum = ord.attnum
     WHERE tbl.relkind = 'r'
-      AND ns.nspname NOT IN ('pg_catalog','information_schema')
+  		AND ns.nspname = current_schema() 
     ORDER BY tbl.relname ASC, idx.relname ASC, ord.n ASC`
 
 	rows, err := conn.Query(ctx, q)
@@ -1354,7 +1397,7 @@ func readForeignKeys(ctx context.Context, conn *pgx.Conn) ([]*schema.ForeignKey,
     JOIN LATERAL unnest(c.confkey) WITH ORDINALITY AS ord2(attnum, n) ON ord2.n = ord.n
     JOIN pg_attribute rcol ON rcol.attrelid = rt.oid AND rcol.attnum = ord2.attnum
     WHERE c.contype = 'f'
-      AND ns.nspname NOT IN ('pg_catalog','information_schema')
+  		AND ns.nspname = current_schema() 
     ORDER BY pt.relname ASC, c.oid ASC, ord.n ASC`
 
 	rows, err := conn.Query(ctx, q)
@@ -1663,8 +1706,8 @@ func CreateForeignKeyStatement(key *schema.ForeignKey) string {
 	)
 }
 
-func CreateSeqResetFnStatement() string {
-	return `create or replace function seq_field_max_value(seq_oid oid) returns bigint
+func CreateSeqResetFnStatement(schemaName string) string {
+	return fmt.Sprintf(`create or replace function %s.seq_field_max_value(seq_oid oid) returns bigint
 volatile strict language plpgsql as $$ 
 declare
     target_table regclass;
@@ -1697,11 +1740,15 @@ begin
     return max_value;
 
 end;
-$$;`
+$$;`, escapeIdentifier(schemaName))
 }
 
-func ExecSeqResetFnStatement() string {
-	return "select relname, setval(oid, seq_field_max_value(oid)) from pg_class where relkind = 'S';"
+func ExecSeqResetFnStatement(schemaName string) string {
+	return fmt.Sprintf(
+		"select c.relname, setval(c.oid, %s.seq_field_max_value(c.oid)) from pg_class c join pg_namespace ns on ns.oid = c.relnamespace where c.relkind = 'S' and ns.nspname = %s;",
+		escapeIdentifier(schemaName),
+		pgStringLiteral(schemaName),
+	)
 }
 
 // VerifyDataIntegrity checks each foreign key has a parent row
@@ -1719,8 +1766,8 @@ func (t *PgsqlTarget) VerifyDataIntegrity(ctx context.Context, tables []*schema.
 				continue
 			}
 
-			childTable := escapeIdentifier(translateIdentifier(fk.Table))
-			parentTable := escapeIdentifier(translateIdentifier(fk.ReferencedTable))
+			childTable := t.qualifiedName(fk.Table)
+			parentTable := t.qualifiedName(fk.ReferencedTable)
 
 			onConds := make([]string, len(fk.Columns))
 			notNulls := make([]string, len(fk.Columns))
