@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"encoding/base64"
 	"fmt"
+	"net/url"
 	"os"
 	"path/filepath"
 	"slices"
@@ -41,25 +42,33 @@ func NewPgsqlTarget(ctx context.Context, targetUrl, textType string) (*PgsqlTarg
 			return nil, fmt.Errorf("Target database must be a PostgreSQL connection URL (postgres://username:password@localhost:5432/database_name)")
 		}
 
-		conn, err := pgx.Connect(ctx, targetUrl)
+		connURL, targetSchema, err := extractTargetSchema(targetUrl)
 		if err != nil {
 			return nil, err
 		}
 
-		var currentSchema string
-		if err := conn.QueryRow(ctx, "select current_schema()").Scan(&currentSchema); err != nil {
-			conn.Close(ctx)
-			return nil, fmt.Errorf("failed to resolve current schema: %w", err)
+		conn, err := pgx.Connect(ctx, connURL)
+		if err != nil {
+			return nil, err
 		}
 
-		searchPathSQL := fmt.Sprintf("set search_path to %s, public", escapeIdentifier(currentSchema))
-		if _, err := conn.Exec(ctx, searchPathSQL); err != nil {
-			conn.Close(ctx)
-			return nil, fmt.Errorf("failed to restrict search_path to current schema: %w", err)
+		if targetSchema == "" {
+			if err := conn.QueryRow(ctx, "select current_schema()").Scan(&targetSchema); err != nil {
+				conn.Close(ctx)
+				return nil, fmt.Errorf("failed to resolve current schema: %w", err)
+			}
+		}
+
+		if targetSchema != "public" {
+			searchPathSQL := fmt.Sprintf("set search_path to %s, public", escapeIdentifier(targetSchema))
+			if _, err := conn.Exec(ctx, searchPathSQL); err != nil {
+				conn.Close(ctx)
+				return nil, fmt.Errorf("failed to restrict search_path to current schema: %w", err)
+			}
 		}
 
 		target.conn = conn
-		target.schema = currentSchema
+		target.schema = targetSchema
 	} else {
 		// file target
 		var out *os.File
@@ -1146,6 +1155,20 @@ func pgStringLiteral(s string) string {
 
 func isConnectionUrl(url string) bool {
 	return !strings.HasPrefix(url, "file://") && strings.Contains(url, "://")
+}
+
+func extractTargetSchema(targetURL string) (string, string, error) {
+	parsedURL, err := url.Parse(targetURL)
+	if err != nil {
+		return "", "", fmt.Errorf("failed to parse target URL: %w", err)
+	}
+
+	query := parsedURL.Query()
+	targetSchema := strings.TrimSpace(query.Get("search_path"))
+	query.Del("search_path")
+	parsedURL.RawQuery = query.Encode()
+
+	return parsedURL.String(), targetSchema, nil
 }
 
 func setReplicationOn(ctx context.Context, conn *pgx.Conn) error {
