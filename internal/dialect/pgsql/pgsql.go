@@ -1623,7 +1623,7 @@ func CreateTableStatement(
 		columnDefs += fromDatatype(column.DataType, textType)
 
 		if column.Default != "" && !column.IsAutoInc {
-			columnDefs += " default " + translateMarkers(column.Default)
+			columnDefs += " default (" + translateMarkers(column.Default) + ")"
 		}
 		if !column.IsNullable {
 			columnDefs += " not"
